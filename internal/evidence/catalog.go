@@ -144,11 +144,32 @@ func RequirementKinds() []string {
 const filesystemDefinitionName = "command-safety-evidence-filesystem"
 const gitDefinitionName = "command-safety-evidence-git"
 
+// kindDeclaringDefinition adapts a tool.Definition to additionally implement
+// Harness's optional tool.EvidenceKindDeclarer capability (pkg/tool's
+// EvidenceKindDeclarer). Embedding tool.Definition promotes every existing
+// method — including the interface's unexported sealing method — so this
+// type still satisfies tool.Definition unchanged; it only adds the one new
+// method Harness's construction-time evidence-policy validation
+// (internal/hustleruntime's validateEvidenceAllowedKinds) probes for via
+// type assertion, so that fail-fast check stops silently skipping this
+// package's evidence-tool definitions.
+type kindDeclaringDefinition struct {
+	tool.Definition
+}
+
+// EvidenceRequirementKinds implements tool.EvidenceKindDeclarer by
+// delegating to RequirementKinds, this package's sole source of truth for
+// the Requirement.Kind values its evidence tools declare (see
+// requirementKinds) — never a second, hand-maintained list.
+func (kindDeclaringDefinition) EvidenceRequirementKinds() []string {
+	return RequirementKinds()
+}
+
 // FilesystemDefinition returns the sealed evidence definition for the five
 // filesystem tools (stat/list/read/glob/grep), bounded by limits.
 func FilesystemDefinition(limits Limits) tool.Definition {
 	limits = limits.normalize()
-	return tool.NewEvidenceDefinition(
+	return kindDeclaringDefinition{tool.NewEvidenceDefinition(
 		filesystemDefinitionName,
 		tool.RequiresWorkspaceRead,
 		filesystemToolInfos(),
@@ -165,7 +186,7 @@ func FilesystemDefinition(limits Limits) tool.Definition {
 				newGrepFilesTool(root, limits.MaxGrepMatches, limits.MaxGrepFileBytes),
 			}, nil
 		},
-	)
+	)}
 }
 
 // GitDefinition returns the sealed evidence definition for the four Git
@@ -174,7 +195,7 @@ func FilesystemDefinition(limits Limits) tool.Definition {
 // network-free default — see VisibilityResolver).
 func GitDefinition(limits Limits, resolver VisibilityResolver) tool.Definition {
 	limits = limits.normalize()
-	return tool.NewEvidenceDefinition(
+	return kindDeclaringDefinition{tool.NewEvidenceDefinition(
 		gitDefinitionName,
 		tool.RequiresWorkspaceRead,
 		gitToolInfos(),
@@ -191,7 +212,7 @@ func GitDefinition(limits Limits, resolver VisibilityResolver) tool.Definition {
 				newGitBranchTool(root, binary),
 			}, nil
 		},
-	)
+	)}
 }
 
 // Definitions returns the complete command-safety evidence pack: the

@@ -185,6 +185,30 @@ func TestBehavior_Catalog_RequirementKindsReturnsDefensiveCopy(t *testing.T) {
 	}
 }
 
+// TestBehavior_Catalog_DefinitionsSatisfyEvidenceKindDeclarer proves every
+// definition Definitions returns implements Harness's optional
+// tool.EvidenceKindDeclarer capability (pkg/tool's EvidenceKindDeclarer),
+// and that EvidenceRequirementKinds() reports exactly the same set as
+// RequirementKinds() — the single source of truth this package's evidence
+// tools declare their Requirement.Kind values from (see requirementKinds).
+// Without this, Harness's construction-time
+// internal/hustleruntime.validateEvidenceAllowedKinds fail-fast check
+// silently skips every one of this package's evidence-tool definitions (its
+// `declarer, ok := definition.(tool.EvidenceKindDeclarer); if !ok { continue }`
+// probe), so a consumer AllowedKinds/Requirement.Kind mismatch would only
+// ever surface later, deep inside a live evidence-tool call.
+func TestBehavior_Catalog_DefinitionsSatisfyEvidenceKindDeclarer(t *testing.T) {
+	t.Parallel()
+	want := RequirementKinds()
+	for _, def := range Definitions(DefaultLimits(), nil) {
+		declarer, ok := def.(tool.EvidenceKindDeclarer)
+		if !ok {
+			t.Fatalf("%s: does not implement tool.EvidenceKindDeclarer", def.Name())
+		}
+		assertSameSet(t, declarer.EvidenceRequirementKinds(), want)
+	}
+}
+
 func TestBehavior_Catalog_DefaultLimitsAreWithinHardCeilings(t *testing.T) {
 	t.Parallel()
 	d := DefaultLimits()
