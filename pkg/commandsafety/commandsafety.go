@@ -1,12 +1,12 @@
 package commandsafety
 
 import (
-	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
 	"time"
 
+	"github.com/looprig/classifiers/internal/evidence"
 	"github.com/looprig/classifiers/internal/policy"
 	"github.com/looprig/classifiers/internal/prompt"
 	"github.com/looprig/classifiers/internal/wire"
@@ -30,11 +30,23 @@ const (
 	inputBytes  = 1 << 20
 	outputBytes = wire.MaxOutputWireBytes
 
-	evidenceRevision            = "command-safety-evidence/v1"
-	placeholderEvidenceToolName = "command_safety_placeholder_evidence"
-	placeholderEvidenceToolDesc = "Placeholder read-only evidence tool. It performs no investigation " +
-		"and always reports that no real evidence is available; a later task replaces it with " +
-		"filesystem and repository evidence tools."
+	// evidenceRevision changes whenever the command-safety evidence-tool
+	// catalog's produced tool set, schemas, or bound limits change in a way
+	// that should be visible in classifier/rig identity (see
+	// hustle.DefinitionDescriptor's evidence-tool policy revision).
+	evidenceRevision = "command-safety-evidence/v2"
+
+	// evidenceMaxRounds/evidenceMaxCalls/evidenceMaxCallsPerRound bound the
+	// tool-use loop shape; evidenceMaxResultBytes/evidenceMaxEvidenceBytes
+	// bound one call's result and the whole loop's aggregate evidence,
+	// independently of every internal/evidence tool's own source-level
+	// truncation (design §12.2/§13.1 — these are the runtime's OWN bounds,
+	// not a substitute for a tool bounding itself).
+	evidenceMaxRounds        = 8
+	evidenceMaxCalls         = 24
+	evidenceMaxCallsPerRound = 6
+	evidenceMaxResultBytes   = 256 << 10
+	evidenceMaxEvidenceBytes = 2 << 20
 )
 
 // Policy is the consumer-tunable command-safety risk policy: the classifier's
@@ -56,56 +68,36 @@ func DefaultPolicy() Policy {
 }
 
 // ReadEvidencePolicy configures the read-only evidence collection used by
-// StandardEvidence. It carries no fields yet: this task establishes the
-// stable construction shape a later task (filesystem and repository
-// evidence tools) will extend.
-type ReadEvidencePolicy struct{}
+// StandardEvidence: the bounded output limits every internal/evidence
+// filesystem and Git tool truncates at the source (Limits' zero value falls
+// back to evidence.DefaultLimits()), and an optional injected
+// VisibilityResolver for evidence_git_remotes (nil means every remote is
+// reported evidence.VisibilityUnknown — see evidence.VisibilityResolver for
+// why this package never performs its own network lookup).
+type ReadEvidencePolicy struct {
+	Limits             evidence.Limits
+	VisibilityResolver evidence.VisibilityResolver
+}
 
 // StandardEvidence returns the command-safety classifier's evidence-tool
-// policy. Today it carries exactly one placeholder, read-only,
-// zero-requirement evidence tool — the minimal non-empty policy Harness's
-// hustle definition machinery structurally requires for a tool-using
-// structured classifier (see hustle.WithEvidenceTools /
-// hustle.DefinitionDescriptor.StructuredOutputWithTools). A later task
-// replaces this placeholder with real filesystem and repository evidence
-// tools without changing this function's signature.
-func StandardEvidence(_ ReadEvidencePolicy) hustle.EvidenceToolPolicy {
+// policy: the complete filesystem and Git evidence pack from
+// internal/evidence (design §13.2 — canonical path resolution, lstat and
+// resolved-target metadata, bounded directory listing/file reading/glob/
+// grep, Git repository/worktree state, status and diff metadata, remotes,
+// branch/upstream/default-branch, and remote-visibility evidence), bound by
+// policy.
+func StandardEvidence(policy ReadEvidencePolicy) hustle.EvidenceToolPolicy {
 	return hustle.EvidenceToolPolicy{
 		Revision: evidenceRevision,
 		Limits: hustle.ToolLoopLimits{
-			MaxRounds:        1,
-			MaxCalls:         1,
-			MaxCallsPerRound: 1,
-			MaxResultBytes:   4096,
-			MaxEvidenceBytes: 4096,
+			MaxRounds:        evidenceMaxRounds,
+			MaxCalls:         evidenceMaxCalls,
+			MaxCallsPerRound: evidenceMaxCallsPerRound,
+			MaxResultBytes:   evidenceMaxResultBytes,
+			MaxEvidenceBytes: evidenceMaxEvidenceBytes,
 		},
-		Definitions: []tool.Definition{tool.NewEvidenceDefinition(
-			placeholderEvidenceToolName,
-			0,
-			[]tool.ToolInfo{{
-				Name:   placeholderEvidenceToolName,
-				Desc:   placeholderEvidenceToolDesc,
-				Schema: json.RawMessage(`{"type":"object","additionalProperties":false}`),
-			}},
-			func(context.Context, tool.EvidenceFactoryBindings) ([]tool.InvokableTool, error) {
-				return []tool.InvokableTool{&placeholderEvidenceTool{}}, nil
-			},
-		)},
+		Definitions: evidence.Definitions(policy.Limits, policy.VisibilityResolver),
 	}
-}
-
-type placeholderEvidenceTool struct{}
-
-func (*placeholderEvidenceTool) Info(context.Context) (*tool.ToolInfo, error) {
-	return &tool.ToolInfo{
-		Name:   placeholderEvidenceToolName,
-		Desc:   placeholderEvidenceToolDesc,
-		Schema: json.RawMessage(`{"type":"object","additionalProperties":false}`),
-	}, nil
-}
-
-func (*placeholderEvidenceTool) InvokableRun(context.Context, string) (*tool.ToolResult, error) {
-	return tool.TextResult("no evidence tools are implemented yet"), nil
 }
 
 // Options configures New. Inference and Model together become the
