@@ -1,3 +1,12 @@
+// Package wire implements the command-safety classifier's strict, versioned
+// JSON codecs for the model's input and output payloads: MarshalInput
+// (input.go) projects a validated gate.PermissionReviewSubject into the
+// bounded, versioned JSON the model sees as evidence, and DecodeOutput
+// (output.go) strictly decodes and validates the model's structured-output
+// verdict back into a gate.PermissionAssessment. Both directions follow the
+// same strict decode discipline Harness's own pkg/gate uses for its wire
+// codecs (see strict.go): no unknown or duplicate JSON field, no JSON null
+// masquerading as an omitted field, and no trailing content.
 package wire
 
 import (
