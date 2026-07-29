@@ -115,6 +115,32 @@ func gitToolInfos() []tool.ToolInfo {
 	}
 }
 
+// requirementKinds is the single source of truth for every
+// tool.Requirement.Kind value this catalog's evidence tools declare: the
+// five filesystem kinds (path.go) and the one shared Git kind (git.go).
+// Nothing else derives its own copy of this set — RequirementKinds (below)
+// and, transitively, pkg/commandsafety.RequiredEvidenceKinds both return
+// exactly this slice, so a future evidence tool that adds or removes a Kind
+// constant here is reflected everywhere that reads it without a second,
+// hand-maintained list to keep in sync.
+var requirementKinds = []string{
+	KindFilesystemStat,
+	KindFilesystemList,
+	KindFilesystemRead,
+	KindFilesystemGlob,
+	KindFilesystemGrep,
+	KindGitRead,
+}
+
+// RequirementKinds returns a fresh copy of every tool.Requirement.Kind value
+// this package's evidence tools declare. See requirementKinds for why this
+// is the package's sole introspection point for that set.
+func RequirementKinds() []string {
+	out := make([]string, len(requirementKinds))
+	copy(out, requirementKinds)
+	return out
+}
+
 const filesystemDefinitionName = "command-safety-evidence-filesystem"
 const gitDefinitionName = "command-safety-evidence-git"
 

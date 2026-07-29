@@ -155,6 +155,36 @@ func TestBehavior_Catalog_BuildProducesWorkingTools(t *testing.T) {
 	}
 }
 
+// TestBehavior_Catalog_RequirementKindsMatchesDeclaredConstants proves
+// RequirementKinds() returns exactly the six Requirement.Kind constants this
+// package's PrepareCall implementations declare (path.go's five filesystem
+// kinds plus git.go's single shared git-read kind) — the introspection point
+// pkg/commandsafety.RequiredEvidenceKinds derives its public answer from.
+func TestBehavior_Catalog_RequirementKindsMatchesDeclaredConstants(t *testing.T) {
+	t.Parallel()
+	want := []string{
+		KindFilesystemStat, KindFilesystemList, KindFilesystemRead,
+		KindFilesystemGlob, KindFilesystemGrep, KindGitRead,
+	}
+	assertSameSet(t, RequirementKinds(), want)
+}
+
+// TestBehavior_Catalog_RequirementKindsReturnsDefensiveCopy proves mutating
+// one call's returned slice cannot affect a later call's result.
+func TestBehavior_Catalog_RequirementKindsReturnsDefensiveCopy(t *testing.T) {
+	t.Parallel()
+	first := RequirementKinds()
+	for i := range first {
+		first[i] = "mutated"
+	}
+	second := RequirementKinds()
+	for _, kind := range second {
+		if kind == "mutated" {
+			t.Fatalf("RequirementKinds() second call = %v, want unaffected by mutation of first call's result", second)
+		}
+	}
+}
+
 func TestBehavior_Catalog_DefaultLimitsAreWithinHardCeilings(t *testing.T) {
 	t.Parallel()
 	d := DefaultLimits()
