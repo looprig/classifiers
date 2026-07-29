@@ -902,10 +902,12 @@ func TestPolicyCloneIsIndependentOfSource(t *testing.T) {
 func TestDefaultPolicyHasAStableNonEmptyRevision(t *testing.T) {
 	t.Parallel()
 
-	if policy.DefaultPolicy().Revision == "" {
+	first := policy.DefaultPolicy()
+	second := policy.DefaultPolicy()
+	if first.Revision == "" {
 		t.Fatal("DefaultPolicy().Revision is empty")
 	}
-	if policy.DefaultPolicy().Revision != policy.DefaultPolicy().Revision {
+	if first.Revision != second.Revision {
 		t.Fatal("DefaultPolicy().Revision is not stable across calls")
 	}
 }
