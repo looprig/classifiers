@@ -402,6 +402,47 @@ func TestBehavior_Git_NotARepository(t *testing.T) {
 	}
 }
 
+// TestBehavior_Git_BinaryUnavailable directly constructs the
+// git-binary-unresolvable condition (resolveGitBinary's degrade path when
+// exec.LookPath("git") fails, catalog.go) rather than relying on every
+// other non-repo test to exercise it only indirectly through
+// isGitRepository() == false. It proves gitRun.run's uniform
+// errGitUnavailable (git.go) funnels cleanly through every one of the 4 git
+// evidence tools to a clean "git_repository: false" result, never a Go
+// error or a panic, and does so regardless of whether git happens to be
+// installed in this test environment.
+func TestBehavior_Git_BinaryUnavailable(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	binary := newGitBinary("", "") // path == "": resolveGitBinary's degrade path.
+
+	tools := map[string]evidenceTool{
+		toolNameGitRepositoryStatus: newGitRepositoryStatusTool(root, binary, 4096),
+		toolNameGitDiff:             newGitDiffTool(root, binary, 4096),
+		toolNameGitRemotes:          newGitRemotesTool(root, binary, nil),
+		toolNameGitBranch:           newGitBranchTool(root, binary),
+	}
+	argsFor := map[string]string{
+		toolNameGitRepositoryStatus: `{}`,
+		toolNameGitDiff:             `{"path":".","ref":"","staged":false}`,
+		toolNameGitRemotes:          `{}`,
+		toolNameGitBranch:           `{}`,
+	}
+	for name, et := range tools {
+		name, et := name, et
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, prepErr, result, runErr := prepareAndRun(context.Background(), t, et, argsFor[name])
+			if prepErr != nil || runErr != nil {
+				t.Fatalf("prepErr=%v runErr=%v", prepErr, runErr)
+			}
+			if !strings.Contains(resultText(t, result), "git_repository: false") {
+				t.Fatalf("%s with an unresolvable git binary = %q, want git_repository: false", name, resultText(t, result))
+			}
+		})
+	}
+}
+
 func TestBehavior_Git_EmptyRepository(t *testing.T) {
 	t.Parallel()
 	requireGit(t)
