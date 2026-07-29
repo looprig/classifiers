@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/looprig/classifiers/internal/prompt"
@@ -501,4 +502,157 @@ func TestClassifierValidateResultAppliesDeterministicPolicyReconciliation(t *tes
 func TestClassifierSatisfiesGatePermissionClassifier(t *testing.T) {
 	t.Parallel()
 	var _ gate.PermissionClassifier = (*commandsafety.Classifier)(nil)
+}
+
+// TestNewDefinitionUsesClassifiedOnceRetryPolicy proves the hustle definition
+// New builds opts into design §12.6's one bounded retry for a classified
+// transient inference failure or recoverable malformed terminal output,
+// rather than the historical single-attempt default (hustle.RetryPolicyNone).
+func TestNewDefinitionUsesClassifiedOnceRetryPolicy(t *testing.T) {
+	t.Parallel()
+
+	classifier, err := commandsafety.New(validOptions())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if classifier.Definition().RetryPolicy() != hustle.RetryPolicyClassifiedOnce {
+		t.Fatalf("Definition().RetryPolicy() = %v, want %v", classifier.Definition().RetryPolicy(), hustle.RetryPolicyClassifiedOnce)
+	}
+	if classifier.Definition().Descriptor().RetryPolicy != hustle.RetryPolicyClassifiedOnce {
+		t.Fatalf("Descriptor().RetryPolicy = %v, want %v", classifier.Definition().Descriptor().RetryPolicy, hustle.RetryPolicyClassifiedOnce)
+	}
+}
+
+// TestClassifierValidateResultMarksPureShapeFailuresRetryable proves
+// ValidateResult returns hustle's sealed recoverable-terminal-validation
+// marker (design §12.6: "duplicate, unknown, missing, or otherwise invalid
+// terminal wire fields may use it") for genuinely malformed model output that
+// is a pure wire-shape problem, never a domain/semantic one.
+func TestClassifierValidateResultMarksPureShapeFailuresRetryable(t *testing.T) {
+	t.Parallel()
+
+	classifier, err := commandsafety.New(validOptions())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	subject := validSubject(t)
+	raw, err := classifier.MarshalInput(subject)
+	if err != nil {
+		t.Fatalf("MarshalInput() error = %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(MarshalInput() output) error = %v", err)
+	}
+	basis := decoded["basis"]
+
+	validOutput := func(mutate func(map[string]any)) []byte {
+		object := map[string]any{
+			"version":        "command_safety_output.v1",
+			"basis":          basis,
+			"risk":           "low",
+			"authorization":  "unknown",
+			"categories":     []string{},
+			"recommendation": "allow",
+			"rationale":      "",
+		}
+		if mutate != nil {
+			mutate(object)
+		}
+		out, err := json.Marshal(object)
+		if err != nil {
+			t.Fatalf("json.Marshal() error = %v", err)
+		}
+		return out
+	}
+
+	tests := []struct {
+		name string
+		raw  []byte
+	}{
+		{
+			name: "null required field",
+			raw:  validOutput(func(o map[string]any) { o["recommendation"] = nil }),
+		},
+		{
+			name: "duplicate top-level JSON key",
+			raw: []byte(strings.Replace(
+				string(validOutput(nil)),
+				`"version":"command_safety_output.v1"`,
+				`"version":"command_safety_output.v1","version":"command_safety_output.v1"`,
+				1,
+			)),
+		},
+		{
+			name: "unknown enum value",
+			raw:  validOutput(func(o map[string]any) { o["risk"] = "extreme" }),
+		},
+		{
+			name: "unsupported wire version",
+			raw:  validOutput(func(o map[string]any) { o["version"] = "command_safety_output.v2" }),
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := classifier.ValidateResult(subject, hustle.Result{Output: tt.raw})
+			if err == nil {
+				t.Fatal("ValidateResult() error = nil, want error")
+			}
+			if !hustle.IsRecoverableTerminalValidationError(err) {
+				t.Fatalf("ValidateResult() error = %v (%T), want the sealed recoverable-terminal-validation marker", err, err)
+			}
+		})
+	}
+}
+
+// TestClassifierValidateResultDoesNotMarkBasisMismatchRetryable is the
+// safety-critical direction of design §12.6: "A basis mismatch, needs_human,
+// deny/unsafe semantic result, arbitrary validator error, callback panic, or
+// any other domain or operational failure must not use it." A false positive
+// here would let a single bad decision get a free retry it should not have.
+func TestClassifierValidateResultDoesNotMarkBasisMismatchRetryable(t *testing.T) {
+	t.Parallel()
+
+	classifier, err := commandsafety.New(validOptions())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	subject := validSubject(t)
+	raw, err := classifier.MarshalInput(subject)
+	if err != nil {
+		t.Fatalf("MarshalInput() error = %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(MarshalInput() output) error = %v", err)
+	}
+	basis, ok := decoded["basis"].(map[string]any)
+	if !ok {
+		t.Fatalf("MarshalInput() basis = %#v, want object", decoded["basis"])
+	}
+	basis["gate_id"] = "00000000-0000-0000-0000-000000000000"
+
+	output := map[string]any{
+		"version":        "command_safety_output.v1",
+		"basis":          basis,
+		"risk":           "low",
+		"authorization":  "unknown",
+		"categories":     []string{},
+		"recommendation": "allow",
+		"rationale":      "",
+	}
+	outputRaw, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	_, err = classifier.ValidateResult(subject, hustle.Result{Output: outputRaw})
+	if err == nil {
+		t.Fatal("ValidateResult() error = nil, want error")
+	}
+	if hustle.IsRecoverableTerminalValidationError(err) {
+		t.Fatal("ValidateResult() marked a basis mismatch retryable, want a non-retryable error")
+	}
 }

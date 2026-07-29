@@ -2,6 +2,7 @@ package commandsafety
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"time"
@@ -193,6 +194,7 @@ func New(options Options) (*Classifier, error) {
 		hustle.WithPolicyRevision(policyRevision),
 		hustle.WithOutputSchema(wire.OutputSchema()),
 		hustle.WithEvidenceTools(options.Evidence),
+		hustle.WithRetryPolicy(hustle.RetryPolicyClassifiedOnce),
 	)
 	if err != nil {
 		return nil, &ConstructionError{Field: FieldDefinition, Cause: err}
@@ -244,6 +246,15 @@ func (c *Classifier) ValidateResult(
 ) (gate.PermissionAssessment, error) {
 	assessment, err := wire.DecodeOutput(subject, result.Output)
 	if err != nil {
+		// Design §12.6: only a pure syntax/shape terminal-decoding failure
+		// (duplicate, unknown, missing, or otherwise invalid wire fields) may
+		// be classified retryable. A basis mismatch is a semantic identity
+		// check, not a wire-shape problem, and must never use the marker —
+		// see wire.OutputValidationError.Retryable for the exact boundary.
+		var validationErr *wire.OutputValidationError
+		if errors.As(err, &validationErr) && validationErr.Retryable() {
+			return gate.PermissionAssessment{}, hustle.NewRecoverableTerminalValidationError()
+		}
 		return gate.PermissionAssessment{}, err
 	}
 	return policy.Reconcile(c.policy, assessment), nil

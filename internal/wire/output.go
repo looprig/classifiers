@@ -102,6 +102,20 @@ func (e *OutputValidationError) Error() string {
 	return "wire: invalid command-safety output (" + string(e.Field) + ": " + string(e.Reason) + ")"
 }
 
+// Retryable reports whether this output-validation failure is a pure
+// syntax/shape signal, safe for a caller to treat as
+// hustle.NewRecoverableTerminalValidationError() under
+// hustle.RetryPolicyClassifiedOnce (design §12.6). Every DecodeOutput
+// failure is a shape problem — duplicate/unknown/missing/null wire fields,
+// an oversized or non-UTF-8 payload, or a malformed/non-canonical enum
+// string — EXCEPT a basis mismatch, which is a semantic identity check
+// (the model echoed back a basis that does not match the trusted subject)
+// and design §12.6 explicitly excludes: "A basis mismatch ... must not use
+// it."
+func (e *OutputValidationError) Retryable() bool {
+	return !(e.Field == OutputFieldBasis && e.Reason == OutputReasonMismatch)
+}
+
 func outputError(field OutputValidationField, reason OutputValidationReason) error {
 	return &OutputValidationError{Field: field, Reason: reason}
 }
