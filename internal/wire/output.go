@@ -11,6 +11,18 @@ import (
 	"github.com/looprig/inference"
 )
 
+// schema.json's "risk" and "categories" properties carry a substantive
+// description defining each enum value in prose (mirroring
+// internal/prompt/command_safety.md's "### Risk Taxonomy" section), NOT a
+// per-enum-value description: the bounded portable JSON Schema subset
+// inference.ValidateOutputSchema accepts has no mechanism for one
+// (github.com/looprig/inference's schemaNode supports only a single
+// type-level "description", not per-enum-item metadata such as a
+// const/description pair — an object element inside "enum" would fail
+// enumValueMatches's string-type check for a string-typed node). A prose
+// property-level description is therefore the richest definition this
+// wire's schema can carry without breaking schema validity.
+//
 //go:embed schema.json
 var outputSchemaJSON []byte
 

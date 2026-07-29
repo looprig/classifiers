@@ -44,9 +44,33 @@ func TestCommandSafetyContainsRequiredStructure(t *testing.T) {
 		"`low`",
 		"`medium`",
 		"`high`",
-		// Defines the risk taxonomy.
+		// Defines the risk taxonomy: a criteria-bearing definition for each
+		// of the 4 risk levels, not just their bare enum names.
 		"### Risk Taxonomy",
 		"`critical`",
+		"#### Risk Levels",
+		"- `low`",
+		"- `medium`",
+		"- `high`",
+		"- `critical`",
+		// Defines each of the 14 closed gate.ReviewRiskCategory values in
+		// its own words (design §19.2's "defines the risk taxonomy"
+		// requirement is not satisfied by the bare enum names alone).
+		"#### Categories",
+		"`data_exfiltration`",
+		"`credential_access`",
+		"`credential_probing`",
+		"`destructive_local`",
+		"`destructive_shared`",
+		"`persistent_security_weakening`",
+		"`production_mutation`",
+		"`protected_source_control`",
+		"`untrusted_code_execution`",
+		"`mutable_network`",
+		"`prompt_injection`",
+		"`authorization_conflict`",
+		"`target_ambiguity`",
+		"`insufficient_evidence`",
 		// Defines consumer policy inputs.
 		"## Consumer Policy Inputs",
 		// Requires the strict assessment schema.

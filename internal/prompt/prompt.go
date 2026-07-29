@@ -12,7 +12,7 @@ import _ "embed"
 // exact wording, per design §19.2: "Prompt, policy, schema, wire, and corpus
 // revisions are independently explicit and included in classifier identity."
 // Bump this whenever command_safety.md's meaning changes.
-const CommandSafetyRevision = "command-safety-prompt/v1"
+const CommandSafetyRevision = "command-safety-prompt/v2"
 
 //go:embed command_safety.md
 var commandSafetyText string

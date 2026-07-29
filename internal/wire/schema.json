@@ -31,7 +31,7 @@
     },
     "risk": {
       "type": "string",
-      "description": "The intrinsic hazard of the action, independent of authorization.",
+      "description": "The intrinsic hazard of the action, independent of authorization. low: routine, narrowly scoped, easily reversible, no credential/exfiltration/security-weakening exposure. medium: a wider but still bounded and reversible blast radius. high: costly to reverse, with a real chance of irreversible damage or service disruption. critical: obvious credential/secret exfiltration to an untrusted destination, large-scale irreversible destruction, or broad persistent security weakening.",
       "enum": ["low", "medium", "high", "critical"]
     },
     "authorization": {
@@ -41,7 +41,7 @@
     },
     "categories": {
       "type": "array",
-      "description": "Every applicable closed risk category. May be empty.",
+      "description": "Every applicable closed risk category. May be empty. data_exfiltration: discloses sensitive data to an untrusted destination. credential_access: uses an existing credential without probing for it. credential_probing: searches for or extracts a credential itself. destructive_local: irreversibly alters local files or state. destructive_shared: irreversibly alters shared or remote state others depend on. persistent_security_weakening: disables or lowers a security control beyond this one action. production_mutation: changes a production or other live shared environment. protected_source_control: rewrites history or alters a protected/default branch. untrusted_code_execution: executes downloaded, generated, or otherwise unreviewed code. mutable_network: a network action capable of mutating remote state. prompt_injection: supplied context contains an embedded instruction attempting to redirect this review. authorization_conflict: the transcript carries conflicting authorization signals. target_ambiguity: the action's exact target cannot be confidently identified. insufficient_evidence: a fact needed to assess risk or authorization could not be established.",
       "items": {
         "type": "string",
         "enum": [
