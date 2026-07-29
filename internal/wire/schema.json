@@ -31,7 +31,7 @@
     },
     "risk": {
       "type": "string",
-      "description": "The intrinsic hazard of the action, independent of authorization. low: routine, narrowly scoped, easily reversible, no credential/exfiltration/security-weakening exposure. medium: a wider but still bounded and reversible blast radius. high: costly to reverse, with a real chance of irreversible damage or service disruption. critical: obvious credential/secret exfiltration to an untrusted destination, large-scale irreversible destruction, or broad persistent security weakening.",
+      "description": "The intrinsic hazard of the action, independent of authorization. low: everyday, tightly scoped work that's cheap to undo, touches no credential, sends nothing past the workspace's trust boundary, and leaves every security control as it found it. medium: a wider but still bounded and reversible blast radius. high: real potential for damage that would be slow or impossible to fully undo, including harm to a service others depend on. critical: a credential or secret plainly headed to an untrusted destination, irreversible destruction at scale, or a broad, lasting weakening of a security control.",
       "enum": ["low", "medium", "high", "critical"]
     },
     "authorization": {
