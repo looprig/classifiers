@@ -634,6 +634,132 @@ func TestSecurity_ExactByteLimits_Grep(t *testing.T) {
 	}
 }
 
+// TestUnit_WalkRoot_SignalsBudgetExhaustion proves walkRoot distinguishes a
+// scan cut short by its node-visit budget from one that completed
+// naturally: a caller (evidence_filesystem_glob/grep) must be able to tell
+// "gave up looking" apart from "found nothing more" instead of treating a
+// budget-exhausted walk as if it were exhaustive.
+func TestUnit_WalkRoot_SignalsBudgetExhaustion(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	for i := 0; i < 10; i++ {
+		mustWrite(t, filepath.Join(base, fmt.Sprintf("f%02d.txt", i)), "x")
+	}
+	r, err := os.OpenRoot(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	visit := func(string, fs.DirEntry) (bool, error) { return true, nil }
+
+	// Deliberately not t.Parallel() on either subtest: both share the same
+	// *os.Root r, which the parent's deferred r.Close() would close as soon
+	// as the parent function body returns — before a paused parallel
+	// subtest ever actually runs its body — so these must run synchronously
+	// while the parent is still on the stack.
+	t.Run("budget exceeded", func(t *testing.T) {
+		exhausted, walkErr := walkRoot(context.Background(), r, ".", 5, visit)
+		if walkErr != nil {
+			t.Fatalf("walkRoot() error = %v, want nil", walkErr)
+		}
+		if !exhausted {
+			t.Fatal("walkRoot() budgetExhausted = false, want true when maxNodes is below the entry count")
+		}
+	})
+
+	t.Run("budget not exceeded", func(t *testing.T) {
+		exhausted, walkErr := walkRoot(context.Background(), r, ".", 100, visit)
+		if walkErr != nil {
+			t.Fatalf("walkRoot() error = %v, want nil", walkErr)
+		}
+		if exhausted {
+			t.Fatal("walkRoot() budgetExhausted = true, want false when the whole tree fits under maxNodes")
+		}
+	})
+}
+
+// TestSecurity_ScanBudgetExhaustion_Glob and its grep counterpart below
+// prove the exhaustion signal actually reaches the tool's own result, not
+// just walkRoot's return value: an evidence_filesystem_glob/grep result
+// with truncated: false must never coincide with a scan that gave up on
+// part of the tree. This test lowers the package's scan-node budget for its
+// own duration (deliberately NOT t.Parallel(): Go's test driver runs every
+// non-parallel top-level test to full completion, including this one's
+// t.Cleanup restore, before any parallel test in this package actually
+// begins running its body, so this mutation of a shared package variable
+// can never race with a concurrent reader).
+func TestSecurity_ScanBudgetExhaustion_Glob(t *testing.T) {
+	base := t.TempDir()
+	for i := 0; i < 5; i++ {
+		mustWrite(t, filepath.Join(base, fmt.Sprintf("f%02d.go", i)), "x")
+	}
+	original := hardMaxGlobScanned
+	hardMaxGlobScanned = 2
+	t.Cleanup(func() { hardMaxGlobScanned = original })
+
+	gt := newGlobFilesTool(base, 500)
+	_, prepErr, result, runErr := prepareAndRun(context.Background(), t, gt, `{"path":".","pattern":"*.go","limit":500}`)
+	if prepErr != nil || runErr != nil {
+		t.Fatalf("prepErr=%v runErr=%v", prepErr, runErr)
+	}
+	text := resultText(t, result)
+	if !strings.Contains(text, "scan_budget_exhausted: true") {
+		t.Fatalf("glob over the scan budget = %q, want scan_budget_exhausted: true", text)
+	}
+	if !strings.Contains(text, "truncated: true") {
+		t.Fatalf("glob over the scan budget = %q, want truncated: true", text)
+	}
+	if !strings.Contains(text, "scanned: 2") {
+		t.Fatalf("glob over the scan budget = %q, want scanned: 2", text)
+	}
+}
+
+func TestSecurity_ScanBudgetExhaustion_Grep(t *testing.T) {
+	base := t.TempDir()
+	for i := 0; i < 5; i++ {
+		mustWrite(t, filepath.Join(base, fmt.Sprintf("f%02d.txt", i)), "needle\n")
+	}
+	original := hardMaxGrepScanned
+	hardMaxGrepScanned = 2
+	t.Cleanup(func() { hardMaxGrepScanned = original })
+
+	gt := newGrepFilesTool(base, 500, 4096)
+	_, prepErr, result, runErr := prepareAndRun(context.Background(), t, gt, `{"path":".","pattern":"needle","regex":false,"case_sensitive":true,"limit":500}`)
+	if prepErr != nil || runErr != nil {
+		t.Fatalf("prepErr=%v runErr=%v", prepErr, runErr)
+	}
+	text := resultText(t, result)
+	if !strings.Contains(text, "scan_budget_exhausted: true") {
+		t.Fatalf("grep over the scan budget = %q, want scan_budget_exhausted: true", text)
+	}
+	if !strings.Contains(text, "truncated: true") {
+		t.Fatalf("grep over the scan budget = %q, want truncated: true", text)
+	}
+}
+
+// TestSecurity_ScanBudgetNotExhausted_ReportsFalse is the counterpart proof
+// that a scan comfortably under budget still correctly reports
+// scan_budget_exhausted: false — this signal must not be a one-way "always
+// true" stub.
+func TestSecurity_ScanBudgetNotExhausted_ReportsFalse(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	mustWrite(t, filepath.Join(base, "only.go"), "x")
+
+	gt := newGlobFilesTool(base, 500)
+	_, prepErr, result, runErr := prepareAndRun(context.Background(), t, gt, `{"path":".","pattern":"*.go","limit":500}`)
+	if prepErr != nil || runErr != nil {
+		t.Fatalf("prepErr=%v runErr=%v", prepErr, runErr)
+	}
+	text := resultText(t, result)
+	if !strings.Contains(text, "scan_budget_exhausted: false") {
+		t.Fatalf("glob well under the scan budget = %q, want scan_budget_exhausted: false", text)
+	}
+	if !strings.Contains(text, "truncated: false") {
+		t.Fatalf("glob well under the scan budget = %q, want truncated: false", text)
+	}
+}
+
 func TestSecurity_Cancellation(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()

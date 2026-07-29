@@ -69,10 +69,8 @@ const (
 	hardMaxReadBytes     = 1 << 20 // 1 MiB
 	hardMaxListEntries   = 10_000
 	hardMaxGlobMatches   = 2_000
-	hardMaxGlobScanned   = 200_000
 	hardMaxGrepMatches   = 1_000
 	hardMaxGrepFileBytes = 2 << 20 // 2 MiB
-	hardMaxGrepScanned   = 200_000
 
 	// maxPathArgBytes bounds any single model-supplied path argument before
 	// it is even lexically inspected.
@@ -82,6 +80,17 @@ const (
 	// maxArgsJSONBytes bounds the raw argument JSON this package will
 	// attempt to decode at all.
 	maxArgsJSONBytes = 16 << 10
+)
+
+// hardMaxGlobScanned and hardMaxGrepScanned bound the number of filesystem
+// nodes walkRoot will visit for one glob/grep call. They are `var`, not
+// `const`, solely so this package's own tests can lower them for the
+// duration of one test to directly exercise the scan-budget-exhausted path
+// without constructing a tree of hundreds of thousands of entries; no
+// production code ever assigns to them.
+var (
+	hardMaxGlobScanned = 200_000
+	hardMaxGrepScanned = 200_000
 )
 
 var (
@@ -782,10 +791,10 @@ func (t *globFilesTool) InvokableRun(ctx context.Context, argsJSON string) (*too
 
 	matches := make([]string, 0, limit)
 	scanned := 0
-	truncated := false
+	matchCapped := false
 	basenameOnly := !strings.ContainsRune(args.Pattern, '/')
 
-	walkErr := walkRoot(ctx, r, rel, hardMaxGlobScanned, func(relEntry string, d fs.DirEntry) (bool, error) {
+	budgetExhausted, walkErr := walkRoot(ctx, r, rel, hardMaxGlobScanned, func(relEntry string, d fs.DirEntry) (bool, error) {
 		scanned++
 		if d.IsDir() {
 			return true, nil
@@ -797,7 +806,7 @@ func (t *globFilesTool) InvokableRun(ctx context.Context, argsJSON string) (*too
 		}
 		if matched {
 			if len(matches) >= limit {
-				truncated = true
+				matchCapped = true
 				return false, nil
 			}
 			matches = append(matches, name)
@@ -815,8 +824,17 @@ func (t *globFilesTool) InvokableRun(ctx context.Context, argsJSON string) (*too
 		b.WriteString("error: unable to search this path\n")
 		return tool.TextResult(b.String()), nil
 	}
+	// truncated is true whenever the reported match set is known to be
+	// incomplete, for either reason: the match cap was reached (more
+	// matches existed beyond limit) or the scan's own node-visit budget was
+	// exhausted before the walk could finish (part of the tree was never
+	// even examined). scan_budget_exhausted disambiguates the two: a
+	// consumer that specifically needs to know whether the whole tree was
+	// looked at must not have to infer that from truncated alone.
+	truncated := matchCapped || budgetExhausted
 	fmt.Fprintf(&b, "matches: %d\n", len(matches))
 	fmt.Fprintf(&b, "truncated: %t\n", truncated)
+	fmt.Fprintf(&b, "scan_budget_exhausted: %t\n", budgetExhausted)
 	fmt.Fprintf(&b, "scanned: %d\n", scanned)
 	for _, m := range matches {
 		fmt.Fprintf(&b, "- %s\n", m)
@@ -915,9 +933,9 @@ func (t *grepFilesTool) InvokableRun(ctx context.Context, argsJSON string) (*too
 	}
 	var matches []matchLine
 	filesScanned, bytesScanned := 0, 0
-	truncated := false
+	matchCapped := false
 
-	walkErr := walkRoot(ctx, r, rel, hardMaxGrepScanned, func(relEntry string, d fs.DirEntry) (bool, error) {
+	budgetExhausted, walkErr := walkRoot(ctx, r, rel, hardMaxGrepScanned, func(relEntry string, d fs.DirEntry) (bool, error) {
 		if d.IsDir() {
 			return true, nil
 		}
@@ -937,10 +955,10 @@ func (t *grepFilesTool) InvokableRun(ctx context.Context, argsJSON string) (*too
 				continue
 			}
 			// Only NOW, upon finding evidence of one match beyond the cap,
-			// do we know the result is truncated — matching exactly limit
-			// matches (with nothing further) must report truncated: false.
+			// do we know the match set is capped — matching exactly limit
+			// matches (with nothing further) must report matchCapped: false.
 			if len(matches) >= limit {
-				truncated = true
+				matchCapped = true
 				return false, nil
 			}
 			matches = append(matches, matchLine{
@@ -963,8 +981,17 @@ func (t *grepFilesTool) InvokableRun(ctx context.Context, argsJSON string) (*too
 		b.WriteString("error: unable to search this path\n")
 		return tool.TextResult(b.String()), nil
 	}
+	// truncated is true whenever the reported match set is known to be
+	// incomplete, for either reason: the match cap was reached (more
+	// matches existed beyond limit) or the scan's own node-visit budget was
+	// exhausted before the walk could finish (part of the tree was never
+	// even examined). scan_budget_exhausted disambiguates the two: a
+	// consumer that specifically needs to know whether the whole tree was
+	// looked at must not have to infer that from truncated alone.
+	truncated := matchCapped || budgetExhausted
 	fmt.Fprintf(&b, "matches: %d\n", len(matches))
 	fmt.Fprintf(&b, "truncated: %t\n", truncated)
+	fmt.Fprintf(&b, "scan_budget_exhausted: %t\n", budgetExhausted)
 	fmt.Fprintf(&b, "files_scanned: %d\n", filesScanned)
 	fmt.Fprintf(&b, "bytes_scanned: %d\n", bytesScanned)
 	for _, m := range matches {
@@ -1057,14 +1084,23 @@ var _ tool.CallPreparer = (*grepFilesTool)(nil)
 // which deliberately forecloses any symlink-cycle walk risk. fn returning
 // (false, nil) stops the walk early without error (e.g. once a result cap
 // is reached); ctx cancellation aborts promptly between entries.
-func walkRoot(ctx context.Context, r *os.Root, start string, maxNodes int, fn func(relPath string, d fs.DirEntry) (bool, error)) error {
+//
+// The returned budgetExhausted reports whether maxNodes was reached before
+// the walk would otherwise have finished naturally — a caller's only way to
+// distinguish "the tree was fully examined and nothing more was found" from
+// "the scan gave up partway through, so absence of a result here is not
+// proof of absence in the tree." budgetExhausted is always false when err
+// is non-nil or when fn itself stops the walk early via (false, nil): those
+// are different reasons for stopping and must not be conflated with running
+// out of scan budget.
+func walkRoot(ctx context.Context, r *os.Root, start string, maxNodes int, fn func(relPath string, d fs.DirEntry) (bool, error)) (budgetExhausted bool, err error) {
 	type pending struct{ dir string }
 	stack := []pending{{dir: start}}
 	visited := 0
 
 	for len(stack) > 0 {
 		if err := ctx.Err(); err != nil {
-			return err
+			return false, err
 		}
 		top := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
@@ -1082,11 +1118,11 @@ func walkRoot(ctx context.Context, r *os.Root, start string, maxNodes int, fn fu
 
 		for _, entry := range entries {
 			if err := ctx.Err(); err != nil {
-				return err
+				return false, err
 			}
 			visited++
 			if visited > maxNodes {
-				return nil
+				return true, nil
 			}
 			childRel := entry.Name()
 			if top.dir != "." {
@@ -1100,10 +1136,10 @@ func walkRoot(ctx context.Context, r *os.Root, start string, maxNodes int, fn fu
 				}
 				keepGoing, err := fn(childRel, fs.FileInfoToDirEntry(resolved))
 				if err != nil {
-					return err
+					return false, err
 				}
 				if !keepGoing {
-					return nil
+					return false, nil
 				}
 				continue
 			}
@@ -1111,10 +1147,10 @@ func walkRoot(ctx context.Context, r *os.Root, start string, maxNodes int, fn fu
 			if entry.IsDir() {
 				keepGoing, err := fn(childRel, entry)
 				if err != nil {
-					return err
+					return false, err
 				}
 				if !keepGoing {
-					return nil
+					return false, nil
 				}
 				stack = append(stack, pending{dir: childRel})
 				continue
@@ -1122,12 +1158,12 @@ func walkRoot(ctx context.Context, r *os.Root, start string, maxNodes int, fn fu
 
 			keepGoing, err := fn(childRel, entry)
 			if err != nil {
-				return err
+				return false, err
 			}
 			if !keepGoing {
-				return nil
+				return false, nil
 			}
 		}
 	}
-	return nil
+	return false, nil
 }
