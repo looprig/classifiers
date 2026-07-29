@@ -165,11 +165,12 @@ type ContextEntryFixture struct {
 	Content string `json:"content"`
 }
 
-// TruncationFixture, when Force is true, asks Case.Subject to build the
-// review context under a deliberately tightened per-kind byte budget
-// (TargetKind/LimitBytes) instead of the generous default policy, through
-// Harness's own gate.BuildReviewContext, so the resulting material
-// truncation is genuinely computed by Harness rather than hand-asserted.
+// TruncationFixture configures whether Case.Subject builds the review
+// context under a deliberately tightened per-kind byte budget. When Force
+// is true, Case.Subject uses TargetKind/LimitBytes instead of the generous
+// default policy, through Harness's own gate.BuildReviewContext, so the
+// resulting material truncation is genuinely computed by Harness rather
+// than hand-asserted.
 type TruncationFixture struct {
 	Force      bool   `json:"force"`
 	TargetKind string `json:"target_kind"`
