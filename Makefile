@@ -17,10 +17,12 @@ export GOFLAGS := -mod=vendor
 VENDOR_DIR ?= vendor
 
 # Sibling modules this module locally replaces during development (see
-# go.mod). Empty until a later task adds a Harness dependency; kept defined
-# here so `make vendor` stays correct as soon as one is added, matching the
-# pattern in github.com/looprig/harness-permission-classifier's Makefile.
-LOCAL_REPLACE_VENDOR_DIRS :=
+# go.mod's replace block), matching the pattern in
+# github.com/looprig/harness-permission-classifier's Makefile.
+LOCAL_REPLACE_VENDOR_DIRS := \
+	$(VENDOR_DIR)/github.com/looprig/core \
+	$(VENDOR_DIR)/github.com/looprig/harness \
+	$(VENDOR_DIR)/github.com/looprig/inference
 
 RELEASE_MODFILE ?= go.release.mod
 

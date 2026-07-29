@@ -1,0 +1,381 @@
+package commandsafety_test
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"testing"
+
+	"github.com/looprig/classifiers/internal/prompt"
+	"github.com/looprig/classifiers/pkg/commandsafety"
+	"github.com/looprig/core/content"
+	"github.com/looprig/core/uuid"
+	"github.com/looprig/harness/pkg/gate"
+	"github.com/looprig/harness/pkg/hustle"
+	"github.com/looprig/harness/pkg/identity"
+	"github.com/looprig/harness/pkg/tool"
+	"github.com/looprig/inference"
+	model "github.com/looprig/inference/model"
+	stream "github.com/looprig/inference/stream"
+)
+
+type fakeInferenceClient struct{}
+
+func (*fakeInferenceClient) Invoke(context.Context, inference.Request) (*inference.Response, error) {
+	return nil, nil
+}
+
+func (*fakeInferenceClient) Stream(context.Context, inference.Request) (*stream.StreamReader[content.Chunk], error) {
+	return nil, nil
+}
+
+func validModel() model.Model {
+	return model.CustomModel(
+		"test-provider", "test-format", "https://model.example.invalid", "test-model",
+		model.WithStructuredOutputWithTools(),
+	)
+}
+
+func validOptions() commandsafety.Options {
+	return commandsafety.Options{
+		Inference: &fakeInferenceClient{},
+		Model:     validModel(),
+		Policy:    commandsafety.DefaultPolicy(),
+		Evidence:  commandsafety.StandardEvidence(commandsafety.ReadEvidencePolicy{}),
+	}
+}
+
+// validSubject builds one internally consistent, digest-stamped subject
+// carrying a command.execute requirement.
+func validSubject(t *testing.T) gate.PermissionReviewSubject {
+	t.Helper()
+
+	toolExecutionID := uuid.MustParse("123e4567-e89b-12d3-a456-426614174110")
+	context := gate.ReviewContext{
+		Coordinates: identity.Coordinates{
+			SessionID: uuid.MustParse("123e4567-e89b-12d3-a456-426614174101"),
+			LoopID:    uuid.MustParse("123e4567-e89b-12d3-a456-426614174102"),
+			TurnID:    uuid.MustParse("123e4567-e89b-12d3-a456-426614174103"),
+			StepID:    uuid.MustParse("123e4567-e89b-12d3-a456-426614174104"),
+		},
+		ContextRevision:    "context-v1",
+		WorkspaceRoot:      "/workspace",
+		WorkingDirectory:   "/workspace/repo",
+		SecurityCeiling:    "workspace-write",
+		GatePolicyRevision: "gate-policy-v1",
+		Entries: []gate.ReviewContextEntry{
+			{Origin: gate.ReviewContextOriginUser, Kind: gate.ReviewContextKindUserMessage, Content: "run git status"},
+			{Origin: gate.ReviewContextOriginAssistant, Kind: gate.ReviewContextKindAssistantToolRequest, Content: `{"command":"git status"}`},
+		},
+	}
+	request := tool.Request{
+		ToolName:           "Bash",
+		Summary:            "run git status",
+		ExecutionID:        toolExecutionID.String(),
+		Command:            "git status",
+		WorkingDirectory:   "/workspace/repo",
+		ExpiresAtUnixMilli: 1800000000000,
+		Requirements: []tool.Requirement{{
+			Kind:        tool.CapabilityCommandExecute,
+			Match:       "git status",
+			Description: "run git status",
+			GrantClass:  tool.GrantClassCommandStart,
+			GrantTarget: "git status",
+		}},
+	}
+	basis := gate.ReviewBasis{
+		GateID:             uuid.MustParse("123e4567-e89b-12d3-a456-426614174109"),
+		ToolExecutionID:    toolExecutionID,
+		ContextRevision:    context.ContextRevision,
+		GatePolicyRevision: context.GatePolicyRevision,
+		ClassifierRevision: "command-safety-v1",
+		SecurityCeiling:    context.SecurityCeiling,
+	}
+	subject, err := gate.NewPermissionReviewSubject(basis, request, context)
+	if err != nil {
+		t.Fatalf("gate.NewPermissionReviewSubject() error = %v", err)
+	}
+	return subject
+}
+
+func TestNewConstructsAValidClassifier(t *testing.T) {
+	t.Parallel()
+
+	classifier, err := commandsafety.New(validOptions())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if classifier.Name() != commandsafety.Name {
+		t.Fatalf("Name() = %q, want %q", classifier.Name(), commandsafety.Name)
+	}
+	if classifier.Revision() != commandsafety.DefaultPolicy().Revision {
+		t.Fatalf("Revision() = %q, want %q", classifier.Revision(), commandsafety.DefaultPolicy().Revision)
+	}
+
+	descriptor := classifier.Definition().Descriptor()
+	if descriptor.Name != commandsafety.Name {
+		t.Fatalf("Descriptor().Name = %q, want %q", descriptor.Name, commandsafety.Name)
+	}
+	if descriptor.Participation != hustle.ParticipationBlocking {
+		t.Fatal("Descriptor().Participation != ParticipationBlocking")
+	}
+	if descriptor.ModelSource != hustle.ModelSourceNamed {
+		t.Fatal("Descriptor().ModelSource != ModelSourceNamed")
+	}
+	if descriptor.OutputSchemaName == "" || descriptor.OutputSchemaSHA256 == ([32]byte{}) {
+		t.Fatal("Descriptor() output schema identity is empty")
+	}
+	if !descriptor.StructuredOutputWithTools {
+		t.Fatal("Descriptor().StructuredOutputWithTools = false, want true")
+	}
+	if descriptor.EvidenceToolPolicyRevision == "" ||
+		descriptor.EvidenceToolDefinitionsSHA256 == ([32]byte{}) ||
+		descriptor.EvidenceProducedToolNamesSHA256 == ([32]byte{}) ||
+		descriptor.EvidenceToolDefinitionCount == 0 {
+		t.Fatal("Descriptor() evidence-tool identity is empty")
+	}
+	if descriptor.PolicyRevision != commandsafety.DefaultPolicy().Revision {
+		t.Fatalf("Descriptor().PolicyRevision = %q, want %q", descriptor.PolicyRevision, commandsafety.DefaultPolicy().Revision)
+	}
+}
+
+func TestNewFoldsExactPromptBytesIntoDescriptorIdentity(t *testing.T) {
+	t.Parallel()
+
+	classifier, err := commandsafety.New(validOptions())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	descriptor := classifier.Definition().Descriptor()
+
+	wantSHA256 := sha256.Sum256([]byte(prompt.CommandSafety()))
+	if descriptor.PromptSHA256 != wantSHA256 {
+		t.Fatal("Descriptor().PromptSHA256 does not hash internal/prompt's exact command-safety text")
+	}
+	if descriptor.PromptRevision != prompt.CommandSafetyRevision {
+		t.Fatalf("Descriptor().PromptRevision = %q, want %q", descriptor.PromptRevision, prompt.CommandSafetyRevision)
+	}
+}
+
+func TestNewDescriptorIdentityChangesWithPolicyRevision(t *testing.T) {
+	t.Parallel()
+
+	first, err := commandsafety.New(validOptions())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	options := validOptions()
+	options.Policy = commandsafety.Policy{Revision: "command-safety-policy/v2-test"}
+	second, err := commandsafety.New(options)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if first.Definition().PolicyRevision() == second.Definition().PolicyRevision() {
+		t.Fatal("PolicyRevision() unchanged after Policy.Revision changed")
+	}
+	if first.Definition().Descriptor().PolicyRevision == second.Definition().Descriptor().PolicyRevision {
+		t.Fatal("Descriptor().PolicyRevision unchanged after Policy.Revision changed")
+	}
+}
+
+func TestNewRejectsNilInferenceClient(t *testing.T) {
+	t.Parallel()
+
+	options := validOptions()
+	options.Inference = nil
+	_, err := commandsafety.New(options)
+	assertConstructionError(t, err, commandsafety.FieldInference)
+}
+
+func TestNewRejectsTypedNilInferenceClient(t *testing.T) {
+	t.Parallel()
+
+	var typedNil *fakeInferenceClient
+	options := validOptions()
+	options.Inference = typedNil
+	_, err := commandsafety.New(options)
+	assertConstructionError(t, err, commandsafety.FieldInference)
+}
+
+func TestNewRejectsInvalidModel(t *testing.T) {
+	t.Parallel()
+
+	options := validOptions()
+	options.Model = model.Model{}
+	_, err := commandsafety.New(options)
+	assertConstructionError(t, err, commandsafety.FieldModel)
+}
+
+func TestNewRejectsModelCapabilityMismatch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		model model.Model
+	}{
+		{name: "no capabilities at all", model: model.CustomModel("p", "f", "https://model.example.invalid", "m")},
+		{name: "tools only", model: model.CustomModel("p", "f", "https://model.example.invalid", "m", model.WithTools())},
+		{name: "structured output only", model: model.CustomModel("p", "f", "https://model.example.invalid", "m", model.WithStructuredOutput())},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			options := validOptions()
+			options.Model = tt.model
+			_, err := commandsafety.New(options)
+			assertConstructionError(t, err, commandsafety.FieldModelCapabilities)
+		})
+	}
+}
+
+func TestNewRejectsEmptyPolicyRevision(t *testing.T) {
+	t.Parallel()
+
+	options := validOptions()
+	options.Policy = commandsafety.Policy{Revision: "   "}
+	_, err := commandsafety.New(options)
+	assertConstructionError(t, err, commandsafety.FieldPolicy)
+}
+
+func TestNewRejectsEmptyEvidencePolicy(t *testing.T) {
+	t.Parallel()
+
+	options := validOptions()
+	options.Evidence = hustle.EvidenceToolPolicy{}
+	_, err := commandsafety.New(options)
+	assertConstructionError(t, err, commandsafety.FieldEvidence)
+}
+
+func TestNewRejectsMalformedNonEmptyEvidencePolicy(t *testing.T) {
+	t.Parallel()
+
+	options := validOptions()
+	// Non-empty Definitions but an invalid (unversioned) policy revision:
+	// this must reach hustle.Define's own validation, not the earlier
+	// empty-evidence guard.
+	options.Evidence.Revision = ""
+	_, err := commandsafety.New(options)
+	assertConstructionError(t, err, commandsafety.FieldDefinition)
+}
+
+func assertConstructionError(t *testing.T, err error, field commandsafety.ConstructionField) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("New() error = nil, want error")
+	}
+	var constructionErr *commandsafety.ConstructionError
+	if !errors.As(err, &constructionErr) {
+		t.Fatalf("error = %T, want *commandsafety.ConstructionError", err)
+	}
+	if constructionErr.Field != field {
+		t.Fatalf("ConstructionError.Field = %q, want %q", constructionErr.Field, field)
+	}
+}
+
+func TestNewDoesNotAliasMutableOptionsAfterConstruction(t *testing.T) {
+	t.Parallel()
+
+	options := validOptions()
+	classifier, err := commandsafety.New(options)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	before := classifier.Definition().Descriptor()
+
+	// Mutate the caller's copies after construction; none of this may alter
+	// the already-constructed classifier's identity.
+	options.Model.Name = "mutated-after-construction"
+	options.Evidence.Definitions[0] = nil
+	options.Policy.Revision = "mutated-after-construction"
+
+	after := classifier.Definition().Descriptor()
+	if before != after {
+		t.Fatal("Definition().Descriptor() changed after mutating the caller's Options")
+	}
+}
+
+func TestClassifierAppliesToCommandExecuteRequirementOnly(t *testing.T) {
+	t.Parallel()
+
+	classifier, err := commandsafety.New(validOptions())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	commandSubject := validSubject(t)
+	if !classifier.Applies(commandSubject) {
+		t.Fatal("Applies() = false for a subject with a command.execute requirement")
+	}
+
+	otherSubject := commandSubject.Clone()
+	otherSubject.Request.Requirements = []tool.Requirement{{
+		Kind:        "filesystem.read",
+		Match:       "/workspace/repo/file.txt",
+		Description: "read a file",
+	}}
+	if classifier.Applies(otherSubject) {
+		t.Fatal("Applies() = true for a subject with no command.execute requirement")
+	}
+
+	emptySubject := commandSubject.Clone()
+	emptySubject.Request.Requirements = nil
+	if classifier.Applies(emptySubject) {
+		t.Fatal("Applies() = true for a subject with no requirements")
+	}
+}
+
+func TestClassifierMarshalInputAndValidateResultRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	classifier, err := commandsafety.New(validOptions())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	subject := validSubject(t)
+
+	raw, err := classifier.MarshalInput(subject)
+	if err != nil {
+		t.Fatalf("MarshalInput() error = %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(MarshalInput() output) error = %v", err)
+	}
+	basis, ok := decoded["basis"].(map[string]any)
+	if !ok || basis["gate_id"] != subject.Basis.GateID.String() {
+		t.Fatalf("MarshalInput() basis = %#v, want echo of subject.Basis", decoded["basis"])
+	}
+
+	output := map[string]any{
+		"version":        "command_safety_output.v1",
+		"basis":          basis,
+		"risk":           "low",
+		"authorization":  "unknown",
+		"categories":     []string{},
+		"recommendation": "allow",
+		"rationale":      "",
+	}
+	outputRaw, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	assessment, err := classifier.ValidateResult(subject, hustle.Result{Output: outputRaw})
+	if err != nil {
+		t.Fatalf("ValidateResult() error = %v", err)
+	}
+	if assessment.Basis != subject.Basis {
+		t.Fatal("ValidateResult() assessment.Basis != subject.Basis")
+	}
+	if assessment.Risk != gate.ReviewRiskLow || assessment.Recommendation != gate.ReviewAllow {
+		t.Fatalf("ValidateResult() assessment = %#v, unexpected fields", assessment)
+	}
+}
+
+func TestClassifierSatisfiesGatePermissionClassifier(t *testing.T) {
+	t.Parallel()
+	var _ gate.PermissionClassifier = (*commandsafety.Classifier)(nil)
+}
