@@ -911,3 +911,70 @@ func TestDefaultPolicyHasAStableNonEmptyRevision(t *testing.T) {
 		t.Fatal("DefaultPolicy().Revision is not stable across calls")
 	}
 }
+
+// allKnownReviewCategories mirrors the full closed set of
+// gate.ReviewRiskCategory values defined in
+// vendor/github.com/looprig/harness/pkg/gate/review.go. pkg/gate exposes no
+// enumerable list of its own taxonomy (only ParseReviewRiskCategory's
+// internal switch), so this module maintains its own local mirror
+// exclusively for TestDefaultPolicyCoversEveryKnownReviewCategory below. If
+// Harness ever adds a category, this list and DefaultPolicy must be updated
+// together, or this test starts failing to catch that drift.
+var allKnownReviewCategories = []gate.ReviewRiskCategory{
+	gate.ReviewCategoryDataExfiltration,
+	gate.ReviewCategoryCredentialAccess,
+	gate.ReviewCategoryCredentialProbing,
+	gate.ReviewCategoryDestructiveLocal,
+	gate.ReviewCategoryDestructiveShared,
+	gate.ReviewCategoryPersistentSecurityWeakening,
+	gate.ReviewCategoryProductionMutation,
+	gate.ReviewCategoryProtectedSourceControl,
+	gate.ReviewCategoryUntrustedCodeExecution,
+	gate.ReviewCategoryMutableNetwork,
+	gate.ReviewCategoryPromptInjection,
+	gate.ReviewCategoryAuthorizationConflict,
+	gate.ReviewCategoryTargetAmbiguity,
+	gate.ReviewCategoryInsufficientEvidence,
+}
+
+// categoriesDeliberatelyExcludedFromMinimumRisk documents, by name, every
+// category this module intentionally leaves out of CategoryMinimumRisk
+// without also placing it in AbsoluteHumanCategories. This mirrors the
+// existing credential_access precedent explained on DefaultPolicy itself:
+// routine, already-authorized credential use, which the
+// category-independent MinimumAuthorization-by-risk matrix still governs
+// whenever it is reported at high risk. Any future addition here must carry
+// the same kind of explicit justification, not just silence.
+var categoriesDeliberatelyExcludedFromMinimumRisk = map[gate.ReviewRiskCategory]string{
+	gate.ReviewCategoryCredentialAccess: "routine, already-authorized credential use in the course of a requested task; still governed by the category-independent MinimumAuthorization-by-risk matrix",
+}
+
+// TestDefaultPolicyCoversEveryKnownReviewCategory guards against a future
+// maintainer silently missing a gate.ReviewRiskCategory while hand-editing
+// DefaultPolicy: every category this module knows about must be present in
+// CategoryMinimumRisk, present in AbsoluteHumanCategories, or explicitly
+// named in categoriesDeliberatelyExcludedFromMinimumRisk with a reason a
+// reviewer can evaluate, never simply absent by omission.
+func TestDefaultPolicyCoversEveryKnownReviewCategory(t *testing.T) {
+	t.Parallel()
+
+	if err := gate.ValidateReviewCategories(allKnownReviewCategories); err != nil {
+		t.Fatalf("allKnownReviewCategories contains an invalid gate.ReviewRiskCategory (typo in this test's own mirror list?): %v", err)
+	}
+
+	p := policy.DefaultPolicy()
+	for _, category := range allKnownReviewCategories {
+		_, hasFloor := p.CategoryMinimumRisk[category]
+		_, absolute := p.AbsoluteHumanCategories[category]
+		if hasFloor || absolute {
+			continue
+		}
+		if reason, excused := categoriesDeliberatelyExcludedFromMinimumRisk[category]; excused {
+			if reason == "" {
+				t.Errorf("category %q is excused from CategoryMinimumRisk/AbsoluteHumanCategories with an empty reason", category)
+			}
+			continue
+		}
+		t.Errorf("gate.ReviewRiskCategory %q is in neither CategoryMinimumRisk nor AbsoluteHumanCategories, and is not named in this test's categoriesDeliberatelyExcludedFromMinimumRisk allowlist — DefaultPolicy may have silently missed it", category)
+	}
+}
