@@ -73,10 +73,34 @@ func DefaultPolicy() Policy {
 			gate.ReviewCategoryDestructiveShared:           gate.ReviewRiskHigh,
 			gate.ReviewCategoryProtectedSourceControl:      gate.ReviewRiskMedium,
 			gate.ReviewCategoryProductionMutation:          gate.ReviewRiskHigh,
+			// credential_access deliberately has NO floor here: unlike
+			// credential_probing (searching for or extracting a credential,
+			// which floors at high because no flavor of probing is
+			// routine), credential_access is routine, already-authorized
+			// credential USE in the course of a requested task, and the
+			// taxonomy's own split between the two categories exists
+			// precisely to let that stay low risk. It is not a blind spot:
+			// MinimumAuthorization below already applies uniformly across
+			// every category, so credential_access reported at high risk
+			// still requires at least medium authorization.
+			gate.ReviewCategoryUntrustedCodeExecution: gate.ReviewRiskHigh,
+			gate.ReviewCategoryMutableNetwork:         gate.ReviewRiskHigh,
 		},
 		AbsoluteHumanCategories: map[gate.ReviewRiskCategory]struct{}{
 			gate.ReviewCategoryDataExfiltration: {},
 			gate.ReviewCategoryPromptInjection:  {},
+			// authorization_conflict, target_ambiguity, and
+			// insufficient_evidence are all the classifier's OWN
+			// self-reported signal that it lacks the confidence needed for
+			// auto-approval (conflicting authorization evidence, an
+			// unidentifiable target, or a fact it could not establish even
+			// after investigation). Per the prompt's own "omissions are not
+			// benign" guidance, that self-reported uncertainty must never
+			// silently clear a risk/authorization bar; it always needs a
+			// human.
+			gate.ReviewCategoryAuthorizationConflict: {},
+			gate.ReviewCategoryTargetAmbiguity:       {},
+			gate.ReviewCategoryInsufficientEvidence:  {},
 		},
 		MinimumAuthorization: map[gate.ReviewRisk]gate.ReviewAuthorization{
 			gate.ReviewRiskLow:    gate.ReviewAuthorizationUnknown,

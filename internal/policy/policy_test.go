@@ -606,6 +606,264 @@ func TestReconcilePostWarningApproval(t *testing.T) {
 	}
 }
 
+// TestReconcileCredentialAccessRemainsGovernedByRiskAuthorization documents a
+// deliberate judgment call: unlike credential_probing, credential_access has
+// NO CategoryMinimumRisk floor of its own, because the taxonomy deliberately
+// distinguishes routine, already-authorized credential USE (credential_access)
+// from searching for or extracting a credential (credential_probing, which
+// already floors at high). A floor above low would make it impossible for a
+// model to ever honestly report credential_access at low risk, which
+// contradicts that taxonomy split and the low-risk case this test still
+// asserts stays eligible. credential_access is still not a blind spot: the
+// pre-existing, category-independent MinimumAuthorization-by-risk matrix
+// already requires at least medium authorization whenever ANY category
+// (including credential_access) is reported at high risk, which the second
+// case below proves.
+func TestReconcileCredentialAccessRemainsGovernedByRiskAuthorization(t *testing.T) {
+	t.Parallel()
+	subject := newSubject(t)
+	p := policy.DefaultPolicy()
+
+	tests := []struct {
+		name          string
+		risk          gate.ReviewRisk
+		authorization gate.ReviewAuthorization
+		wantEligible  bool
+	}{
+		{
+			name:          "routine authorized use of an already-available credential stays eligible at low risk",
+			risk:          gate.ReviewRiskLow,
+			authorization: gate.ReviewAuthorizationUnknown,
+			wantEligible:  true,
+		},
+		{
+			name:          "credential access reported at high risk with no authorization evidence still stays human via the general authorization matrix",
+			risk:          gate.ReviewRiskHigh,
+			authorization: gate.ReviewAuthorizationUnknown,
+			wantEligible:  false,
+		},
+		{
+			name:          "the same high-risk credential access becomes eligible once authorization names it",
+			risk:          gate.ReviewRiskHigh,
+			authorization: gate.ReviewAuthorizationMedium,
+			wantEligible:  true,
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := eligible(t, p, subject, tt.risk, tt.authorization, []gate.ReviewRiskCategory{gate.ReviewCategoryCredentialAccess})
+			if got != tt.wantEligible {
+				t.Fatalf("eligible() = %v, want %v", got, tt.wantEligible)
+			}
+		})
+	}
+}
+
+func TestReconcileUntrustedCodeExecution(t *testing.T) {
+	t.Parallel()
+	subject := newSubject(t)
+	p := policy.DefaultPolicy()
+
+	tests := []struct {
+		name          string
+		risk          gate.ReviewRisk
+		authorization gate.ReviewAuthorization
+		wantEligible  bool
+	}{
+		{
+			name:          "reporting untrusted code execution at low risk is an internally inconsistent understatement and stays human",
+			risk:          gate.ReviewRiskLow,
+			authorization: gate.ReviewAuthorizationHigh,
+			wantEligible:  false,
+		},
+		{
+			name:          "executing arbitrary downloaded or generated code with no authorization evidence stays human",
+			risk:          gate.ReviewRiskHigh,
+			authorization: gate.ReviewAuthorizationUnknown,
+			wantEligible:  false,
+		},
+		{
+			name:          "the same execution becomes eligible once authorization names it",
+			risk:          gate.ReviewRiskHigh,
+			authorization: gate.ReviewAuthorizationMedium,
+			wantEligible:  true,
+		},
+		{
+			name:          "an unbounded or unreviewed execution at critical risk always needs a human",
+			risk:          gate.ReviewRiskCritical,
+			authorization: gate.ReviewAuthorizationHigh,
+			wantEligible:  false,
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := eligible(t, p, subject, tt.risk, tt.authorization, []gate.ReviewRiskCategory{gate.ReviewCategoryUntrustedCodeExecution})
+			if got != tt.wantEligible {
+				t.Fatalf("eligible() = %v, want %v", got, tt.wantEligible)
+			}
+		})
+	}
+}
+
+func TestReconcileMutableNetwork(t *testing.T) {
+	t.Parallel()
+	subject := newSubject(t)
+	p := policy.DefaultPolicy()
+
+	tests := []struct {
+		name          string
+		risk          gate.ReviewRisk
+		authorization gate.ReviewAuthorization
+		wantEligible  bool
+	}{
+		{
+			name:          "reporting a mutable network action at low risk is an inconsistent understatement and stays human",
+			risk:          gate.ReviewRiskLow,
+			authorization: gate.ReviewAuthorizationHigh,
+			wantEligible:  false,
+		},
+		{
+			name:          "a network action that can mutate remote state with no authorization evidence stays human",
+			risk:          gate.ReviewRiskHigh,
+			authorization: gate.ReviewAuthorizationUnknown,
+			wantEligible:  false,
+		},
+		{
+			name:          "the same mutable network action becomes eligible once authorization names it",
+			risk:          gate.ReviewRiskHigh,
+			authorization: gate.ReviewAuthorizationMedium,
+			wantEligible:  true,
+		},
+		{
+			name:          "an unrecoverable mutable-network action at critical risk always needs a human",
+			risk:          gate.ReviewRiskCritical,
+			authorization: gate.ReviewAuthorizationHigh,
+			wantEligible:  false,
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := eligible(t, p, subject, tt.risk, tt.authorization, []gate.ReviewRiskCategory{gate.ReviewCategoryMutableNetwork})
+			if got != tt.wantEligible {
+				t.Fatalf("eligible() = %v, want %v", got, tt.wantEligible)
+			}
+		})
+	}
+}
+
+// TestReconcileAuthorizationConflictIsAlwaysAbsoluteHuman proves the
+// classifier's own self-reported signal that the transcript carries
+// conflicting authorization evidence is always routed to a human, regardless
+// of how low the reported risk or how strong the reported authorization is
+// (the fail-secure direction the reviewer specifically called out).
+func TestReconcileAuthorizationConflictIsAlwaysAbsoluteHuman(t *testing.T) {
+	t.Parallel()
+	subject := newSubject(t)
+	p := policy.DefaultPolicy()
+
+	tests := []struct {
+		name          string
+		risk          gate.ReviewRisk
+		authorization gate.ReviewAuthorization
+	}{
+		{name: "low risk with strong authorization is still blocked", risk: gate.ReviewRiskLow, authorization: gate.ReviewAuthorizationHigh},
+		{name: "high risk with strong authorization is still blocked", risk: gate.ReviewRiskHigh, authorization: gate.ReviewAuthorizationHigh},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := eligible(t, p, subject, tt.risk, tt.authorization, []gate.ReviewRiskCategory{gate.ReviewCategoryAuthorizationConflict})
+			if got {
+				t.Fatal("eligible() = true, want false for authorization_conflict")
+			}
+		})
+	}
+}
+
+// TestReconcileTargetAmbiguityIsAlwaysAbsoluteHuman is the reviewer's
+// specifically described regression scenario: before this fix, a
+// target_ambiguity report at medium risk with unknown authorization and no
+// other category cleared the pre-fix policy (no CategoryMinimumRisk floor, no
+// AbsoluteHuman entry, and MinimumAuthorization[medium] == unknown placed no
+// bar). The classifier itself signaling that it cannot confidently identify
+// the action's target must never auto-approve.
+func TestReconcileTargetAmbiguityIsAlwaysAbsoluteHuman(t *testing.T) {
+	t.Parallel()
+	subject := newSubject(t)
+	p := policy.DefaultPolicy()
+
+	// The exact scenario that would have cleared before this fix: medium
+	// risk, unknown authorization, no other tightening category.
+	if eligible(t, p, subject, gate.ReviewRiskMedium, gate.ReviewAuthorizationUnknown, []gate.ReviewRiskCategory{gate.ReviewCategoryTargetAmbiguity}) {
+		t.Fatal("eligible() = true, want false: target_ambiguity must fail closed even at medium risk with unknown authorization")
+	}
+
+	tests := []struct {
+		name          string
+		risk          gate.ReviewRisk
+		authorization gate.ReviewAuthorization
+	}{
+		{name: "low risk with strong authorization is still blocked", risk: gate.ReviewRiskLow, authorization: gate.ReviewAuthorizationHigh},
+		{name: "high risk with strong authorization is still blocked", risk: gate.ReviewRiskHigh, authorization: gate.ReviewAuthorizationHigh},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := eligible(t, p, subject, tt.risk, tt.authorization, []gate.ReviewRiskCategory{gate.ReviewCategoryTargetAmbiguity})
+			if got {
+				t.Fatal("eligible() = true, want false for target_ambiguity")
+			}
+		})
+	}
+}
+
+// TestReconcileInsufficientEvidenceIsAlwaysAbsoluteHuman is the reviewer's
+// other specifically described regression scenario, for insufficient_evidence
+// rather than target_ambiguity: see
+// TestReconcileTargetAmbiguityIsAlwaysAbsoluteHuman for the exact pre-fix
+// false-clear this mirrors. A model that itself signals "I don't have enough
+// evidence" while still recommending allow is exactly the case the prompt's
+// own "omissions are not benign" guidance warns against, and must always fail
+// closed to a human regardless of the risk/authorization it also reported.
+func TestReconcileInsufficientEvidenceIsAlwaysAbsoluteHuman(t *testing.T) {
+	t.Parallel()
+	subject := newSubject(t)
+	p := policy.DefaultPolicy()
+
+	// The exact scenario that would have cleared before this fix: medium
+	// risk, unknown authorization, no other tightening category.
+	if eligible(t, p, subject, gate.ReviewRiskMedium, gate.ReviewAuthorizationUnknown, []gate.ReviewRiskCategory{gate.ReviewCategoryInsufficientEvidence}) {
+		t.Fatal("eligible() = true, want false: insufficient_evidence must fail closed even at medium risk with unknown authorization")
+	}
+
+	tests := []struct {
+		name          string
+		risk          gate.ReviewRisk
+		authorization gate.ReviewAuthorization
+	}{
+		{name: "low risk with strong authorization is still blocked", risk: gate.ReviewRiskLow, authorization: gate.ReviewAuthorizationHigh},
+		{name: "high risk with strong authorization is still blocked", risk: gate.ReviewRiskHigh, authorization: gate.ReviewAuthorizationHigh},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := eligible(t, p, subject, tt.risk, tt.authorization, []gate.ReviewRiskCategory{gate.ReviewCategoryInsufficientEvidence})
+			if got {
+				t.Fatal("eligible() = true, want false for insufficient_evidence")
+			}
+		})
+	}
+}
+
 func TestPolicyCloneIsIndependentOfSource(t *testing.T) {
 	t.Parallel()
 
