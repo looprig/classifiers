@@ -667,11 +667,9 @@ func (t *readFileTool) InvokableRun(_ context.Context, argsJSON string) (*tool.T
 	if info.IsDir() {
 		return tool.TextResult(fmt.Sprintf("path: %s\nerror: is a directory\n", rel)), nil
 	}
-	if info.Mode()&fs.ModeSymlink != 0 {
-		// os.Root's Open already followed a within-root symlink to reach a
-		// regular file here; a non-regular final target (device, socket) is
-		// refused explicitly rather than read.
-	}
+	// os.Root's Open already followed a within-root symlink to reach a
+	// regular file here; a non-regular final target (device, socket) is
+	// refused explicitly rather than read.
 	if !info.Mode().IsRegular() {
 		return tool.TextResult(fmt.Sprintf("path: %s\nerror: not a regular file\n", rel)), nil
 	}
