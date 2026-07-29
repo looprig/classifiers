@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/looprig/classifiers/internal/policy"
 	"github.com/looprig/classifiers/internal/prompt"
 	"github.com/looprig/classifiers/internal/wire"
 	"github.com/looprig/harness/pkg/gate"
@@ -36,28 +37,22 @@ const (
 		"filesystem and repository evidence tools."
 )
 
-// Policy is the consumer-tunable command-safety risk policy. Its shape is
-// intentionally minimal for now: Revision alone participates in classifier
-// identity (see Definition().Descriptor().PolicyRevision). A later task adds
-// the deterministic risk/applicability matrix this type will carry; this
-// task establishes only its construction shape, immutability, and cloning.
-type Policy struct {
-	Revision string
-}
+// Policy is the consumer-tunable command-safety risk policy: the classifier's
+// own deterministic taxonomy of category risk floors, absolute-human
+// categories, and minimum authorization thresholds (internal/policy.Policy).
+// Revision alone participates in classifier identity (see
+// Definition().Descriptor().PolicyRevision); the taxonomy content it names
+// determines what ValidateResult reconciles a decoded model assessment
+// against before that assessment ever crosses this module's public boundary.
+// Policy is a type alias rather than a wrapper so its Clone method (defensive
+// deep copy of every map field) is inherited directly from internal/policy.
+type Policy = policy.Policy
 
-// Clone returns an independently owned copy. Policy is currently value-only
-// (no reference fields), so Clone is a plain copy; it exists so callers and
-// future fields (once Task 20 adds slice/map policy data) have a stable,
-// forward-compatible defensive-copy contract.
-func (p Policy) Clone() Policy {
-	return p
-}
-
-// DefaultPolicy returns the initial command-safety policy revision. Its
-// matrix content is filled in by a later task; today it establishes only a
-// stable, non-empty revision label.
+// DefaultPolicy returns the initial command-safety policy: a stable,
+// non-empty revision label paired with internal/policy.DefaultPolicy's
+// taxonomy content.
 func DefaultPolicy() Policy {
-	return Policy{Revision: "command-safety-policy/v1"}
+	return policy.DefaultPolicy()
 }
 
 // ReadEvidencePolicy configures the read-only evidence collection used by
@@ -160,6 +155,7 @@ func (e *ConstructionError) Unwrap() error { return e.Cause }
 type Classifier struct {
 	definition hustle.Definition
 	revision   string
+	policy     Policy
 }
 
 // New validates options and returns an immutable command-safety classifier.
@@ -210,7 +206,7 @@ func New(options Options) (*Classifier, error) {
 		return nil, &ConstructionError{Field: FieldDefinition, Cause: err}
 	}
 
-	return &Classifier{definition: definition, revision: policyRevision}, nil
+	return &Classifier{definition: definition, revision: policyRevision, policy: options.Policy.Clone()}, nil
 }
 
 // Name returns the classifier's stable registration name.
@@ -242,13 +238,23 @@ func (c *Classifier) MarshalInput(subject gate.PermissionReviewSubject) (json.Ra
 }
 
 // ValidateResult strictly decodes and validates one hustle result against
-// subject, returning the resulting PermissionAssessment. It never returns
-// an assessment whose Basis differs from subject.Basis.
+// subject, then reconciles the decoded model assessment against this
+// classifier's own deterministic command-safety policy (internal/policy)
+// before returning it. Reconciliation only ever tightens: it can turn an
+// internally inconsistent or taxonomically absolute-human allow
+// recommendation into needs_human, but it never lowers a reported risk,
+// never raises a reported authorization, and never turns an existing
+// needs_human back into allow. It never returns an assessment whose Basis
+// differs from subject.Basis.
 func (c *Classifier) ValidateResult(
 	subject gate.PermissionReviewSubject,
 	result hustle.Result,
 ) (gate.PermissionAssessment, error) {
-	return wire.DecodeOutput(subject, result.Output)
+	assessment, err := wire.DecodeOutput(subject, result.Output)
+	if err != nil {
+		return gate.PermissionAssessment{}, err
+	}
+	return policy.Reconcile(c.policy, assessment), nil
 }
 
 // nilInferenceClient reports whether client is nil, including a typed nil

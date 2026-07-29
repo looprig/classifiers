@@ -327,6 +327,73 @@ func TestClassifierAppliesToCommandExecuteRequirementOnly(t *testing.T) {
 	}
 }
 
+// TestClassifierAppliesToCommandTriggeredCombination proves applicability is
+// decided purely from the set of typed tool.Requirement.Kind values present
+// on the request, never from tool.Request.ToolName or Summary: a request
+// that carries a command.execute requirement ALONGSIDE other,
+// command-triggered requirement kinds (a plausible filesystem/network
+// combination a command spawn might also require) remains applicable, while
+// a request carrying those same other kinds WITHOUT any command.execute
+// requirement at all remains not applicable (design §19.1: a later
+// gate.general-safety classifier owns that case, not gate.command-safety).
+func TestClassifierAppliesToCommandTriggeredCombination(t *testing.T) {
+	t.Parallel()
+
+	classifier, err := commandsafety.New(validOptions())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	commandSubject := validSubject(t)
+
+	combinedSubject := commandSubject.Clone()
+	combinedSubject.Request.Requirements = []tool.Requirement{
+		{
+			Kind:        tool.CapabilityCommandExecute,
+			Match:       "git status",
+			Description: "run git status",
+			GrantClass:  tool.GrantClassCommandStart,
+			GrantTarget: "git status",
+		},
+		{
+			Kind:        "filesystem.write",
+			Match:       "/workspace/repo",
+			Description: "the command may write inside the workspace",
+		},
+		{
+			Kind:        "network.outbound",
+			Match:       "example.invalid",
+			Description: "the command may reach an outbound host",
+		},
+	}
+	if !classifier.Applies(combinedSubject) {
+		t.Fatal("Applies() = false for a subject with a command.execute requirement plus other requirement kinds")
+	}
+
+	// Confirm ToolName/Summary genuinely play no role: a command-shaped
+	// ToolName/Summary with no command.execute requirement at all is still
+	// not applicable, and a deliberately misleading, non-command-shaped
+	// ToolName/Summary paired with a real command.execute requirement is
+	// still applicable.
+	nonCommandToolNameSubject := commandSubject.Clone()
+	nonCommandToolNameSubject.Request.Requirements = []tool.Requirement{
+		{Kind: "filesystem.write", Match: "/workspace/repo", Description: "write inside the workspace"},
+		{Kind: "network.outbound", Match: "example.invalid", Description: "reach an outbound host"},
+	}
+	nonCommandToolNameSubject.Request.ToolName = "Bash"
+	nonCommandToolNameSubject.Request.Summary = "run a shell command"
+	if classifier.Applies(nonCommandToolNameSubject) {
+		t.Fatal("Applies() = true for a command-shaped ToolName/Summary with no command.execute requirement")
+	}
+
+	misleadingToolNameSubject := commandSubject.Clone()
+	misleadingToolNameSubject.Request.ToolName = "ReadFile"
+	misleadingToolNameSubject.Request.Summary = "read a file"
+	if !classifier.Applies(misleadingToolNameSubject) {
+		t.Fatal("Applies() = false for a command.execute requirement under a non-command-shaped ToolName/Summary")
+	}
+}
+
 func TestClassifierMarshalInputAndValidateResultRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -372,6 +439,62 @@ func TestClassifierMarshalInputAndValidateResultRoundTrip(t *testing.T) {
 	}
 	if assessment.Risk != gate.ReviewRiskLow || assessment.Recommendation != gate.ReviewAllow {
 		t.Fatalf("ValidateResult() assessment = %#v, unexpected fields", assessment)
+	}
+}
+
+// TestClassifierValidateResultAppliesDeterministicPolicyReconciliation
+// proves ValidateResult does not hand a model's raw, unreconciled
+// recommendation straight back to Harness: a model that reports the
+// data_exfiltration category yet still recommends allow is internally
+// inconsistent with this classifier's own default policy
+// (internal/policy.DefaultPolicy's AbsoluteHumanCategories), and
+// ValidateResult must tighten that recommendation to needs_human before it
+// ever crosses this module's public boundary.
+func TestClassifierValidateResultAppliesDeterministicPolicyReconciliation(t *testing.T) {
+	t.Parallel()
+
+	classifier, err := commandsafety.New(validOptions())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	subject := validSubject(t)
+
+	raw, err := classifier.MarshalInput(subject)
+	if err != nil {
+		t.Fatalf("MarshalInput() error = %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(MarshalInput() output) error = %v", err)
+	}
+	basis := decoded["basis"]
+
+	output := map[string]any{
+		"version":        "command_safety_output.v1",
+		"basis":          basis,
+		"risk":           "high",
+		"authorization":  "high",
+		"categories":     []string{"data_exfiltration"},
+		"recommendation": "allow",
+		"rationale":      "the model incorrectly judged this disclosure safe to auto-approve",
+	}
+	outputRaw, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	assessment, err := classifier.ValidateResult(subject, hustle.Result{Output: outputRaw})
+	if err != nil {
+		t.Fatalf("ValidateResult() error = %v", err)
+	}
+	if assessment.Recommendation != gate.ReviewNeedsHuman {
+		t.Fatalf("ValidateResult() assessment.Recommendation = %q, want %q (deterministic policy reconciliation was not applied)",
+			assessment.Recommendation, gate.ReviewNeedsHuman)
+	}
+	// The model's own reported risk and authorization are never rewritten by
+	// reconciliation: only the recommendation may tighten.
+	if assessment.Risk != gate.ReviewRiskHigh || assessment.Authorization != gate.ReviewAuthorizationHigh {
+		t.Fatalf("ValidateResult() assessment = %#v, want risk/authorization preserved verbatim", assessment)
 	}
 }
 
