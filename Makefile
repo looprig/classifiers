@@ -1,4 +1,4 @@
-.PHONY: test fmt fmt-check vendor vendor-scrub vendor-check release-check
+.PHONY: test fmt fmt-check lint vuln secure vendor vendor-scrub vendor-check release-check
 
 GO ?= go
 
@@ -39,6 +39,27 @@ fmt-check:
 	if [ -n "$$unformatted" ]; then \
 		echo "gofmt needed (run 'make fmt'):"; echo "$$unformatted"; exit 1; \
 	fi
+
+# go.mod's tool block declares gosec/staticcheck/govulncheck (dev/tool-only,
+# never compiled into this module's own packages) — these three targets
+# mirror github.com/looprig/harness-permission-classifier's Makefile
+# exactly so `make secure` is a consistent convention across every sibling
+# module in this feature, not just Harness and CodeRig.
+lint: fmt-check vendor-check
+	go vet ./...
+	go tool staticcheck ./...
+	# gosec is NOT module-aware: its ./... is a filesystem walk that would
+	# descend into sibling checkouts alongside this module rather than
+	# stopping at module boundaries the way go vet and staticcheck do. Scope
+	# it to THIS module's package dirs via GO_DIRS (the same go-list idiom
+	# fmt/fmt-check use).
+	go tool gosec $(GO_DIRS)
+
+vuln:
+	go mod verify
+	go tool govulncheck ./...
+
+secure: lint vuln
 
 # Refresh the auditable dependency tree, then remove only VCS metadata
 # donated by any declared local replace targets. A final whole-tree check
