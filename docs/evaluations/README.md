@@ -143,3 +143,34 @@ anything other than `equal`/`stricter`, if a `stricter` case has no
 justification, or if the corpus contains *zero* stricter cases at all (per
 the reasoning above, that absence would itself be suspicious, not
 reassuring).
+
+## Where this fits in the wider design
+
+This corpus and runner evaluate exactly one thing: whether
+`gate.command-safety`'s `MarshalInput` → `ValidateResult` →
+`gate.EvaluatePermissionAssessment` pipeline produces the *correct*
+assessment and eligibility for a scenario. It deliberately does not
+evaluate, and is not the place to add coverage for, concerns that are
+Harness's own responsibility rather than this classifier's:
+
+- **Human fallback** — that a `needs_human` (or any non-eligible) result
+  leaves Harness's ordinary human gate open is a Harness-level invariant
+  (`pkg/gate`'s three-state evaluator), not something this corpus proves.
+  This corpus proves only that the classifier's *own* assessment is correct
+  for a scenario; `FalseAllow`/`FalseHuman` in the confusion matrix is the
+  signal that would catch this classifier recommending the wrong side.
+- **Audit and restore** — durable event redaction, restore drift, and the
+  disabled→enabled `DriftWarn` rule live entirely in Harness (`pkg/rig`,
+  `pkg/gate`, `pkg/event`) and are covered by Harness's and CodeRig's own
+  test suites, not this corpus.
+- **Live model behavior** — every report from this runner today is
+  synthetic (see "What the runner is" above): no real model call, no real
+  evidence-tool loop. `Report.ToolEvidenceUsage`/`LatencyTokenUsage`
+  explicitly report "not applicable" rather than a fabricated number until a
+  live-evaluation mode exists.
+
+See
+[`harness/pkg/gate/README.md#permission-review`](https://github.com/looprig/harness/blob/main/pkg/gate/README.md#permission-review)
+for the full enable/disable, model-capability, evidence-boundary,
+human-fallback, audit/privacy, policy-tuning, and restore-behavior story this
+classifier's evaluation sits alongside.

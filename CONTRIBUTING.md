@@ -37,7 +37,15 @@ layout rather than the test.
 
 - **Classifier output is evidence, never authority.** This module never
   persists a rule, mints a grant, denies a tool call, closes a gate, or
-  widens a security ceiling. Those are Harness's job.
+  widens a security ceiling. Those are Harness's job. Concretely: every
+  outcome besides a validated `allowed` assessment (which Harness's own
+  `gate.PermissionReviewPolicy` may then, separately, turn into a one-shot
+  approval) leaves the ordinary human gate exactly as open as it always was.
+- **A classifier's model must support tool use with structured output.**
+  `commandsafety.New` requires `Caps.Tools`, `Caps.StructuredOutput`, and
+  `Caps.StructuredOutputWithTools` together and fails construction
+  (`ConstructionError{Field: FieldModelCapabilities}`) rather than silently
+  degrading to a text-only prompt if a contributed model binding lacks one.
 - **Strict typing everywhere.** No `any`/`interface{}` except at explicit
   serialization boundaries, narrowed immediately. Named types over bare
   primitives when a value carries domain meaning.
@@ -49,9 +57,30 @@ layout rather than the test.
 - **Prompts, policy text, and evidence stay internal.** Only the strict
   typed assessment and locally recomputed decision cross this module's
   public boundary; raw model input/output/reasoning is not durable product
-  data.
+  data. This module produces no durable audit record itself — Harness's
+  `PermissionReviewStarted`/`PermissionReviewCompleted` events are the audit
+  trail, and they are internal-visibility and redacted by construction (see
+  the harness `pkg/gate/README.md`'s "Audit and privacy" section).
+- **A new or changed evidence tool declares its `Requirement.Kind`s through
+  `internal/evidence.RequirementKinds`**, never a hand-copied string
+  elsewhere — `pkg/commandsafety.RequiredEvidenceKinds()` is the one public
+  pass-through a consumer's `rig.WithPermissionReviewEvidence` allowlist
+  relies on staying in sync.
 - **Prefer stdlib.** External packages require explicit approval in the
   conversation that adds them before `go get` is run.
+
+## Contributing an evaluation corpus change
+
+A new or changed corpus case, expected result, or Codex-parity record is
+more than a typo fix and needs its own workflow — see
+[`docs/evaluations/README.md`](docs/evaluations/README.md) ("Adding a new
+case") for the full steps: pick or add a `corpus.DesignCategory`, write the
+case in your own words (never copy Codex/Guardian source or fixture text),
+fill in `expected`/`codex_parity`, run
+`TestEvaluateCorpusMatchesRealPipeline` to prove `expected_eligible` matches
+what the real pipeline computes, bump `corpus.Revision`, and record a new
+`docs/evaluations/<revision>.md` report noting every changed result from the
+previously accepted revision.
 
 ## Build, test, and secure
 
