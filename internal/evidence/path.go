@@ -335,7 +335,16 @@ const grepFilesSchema = `{
 
 const toolNameFilesystemStat = "evidence_filesystem_stat"
 
-type pathStatTool struct{ root string }
+type pathStatTool struct {
+	root string
+
+	// observations carries the target-sensitive observation InvokableRun
+	// captured for the most recent call against each rel it stat'd, forward
+	// to the matching later ObservedRequirement call — see observation.go's
+	// observationCapture doc comment and this tool's own ObservedRequirement
+	// doc comment for why.
+	observations observationCapture
+}
 
 func newPathStatTool(root string) *pathStatTool { return &pathStatTool{root: root} }
 
@@ -399,8 +408,17 @@ func (t *pathStatTool) InvokableRun(_ context.Context, argsJSON string) (*tool.T
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		b.WriteString("exists: false\n")
+		// Absence is itself a real, TOCTOU-relevant observation (design
+		// §13.4's own worked example) — record it, captured from this exact
+		// Lstat call, not a later independent one. See
+		// observation.go's observationCapture and pathStatTool's own
+		// ObservedRequirement doc comment.
+		t.observations.record(rel, canonicalObservationTarget(t.root, rel), observationDigest(fingerprintAbsentFields()...))
 		return tool.TextResult(b.String()), nil
 	case err != nil:
+		// The target's state genuinely could not be established: no
+		// observation is recorded, matching this tool's pre-existing
+		// "ok=false on error" contract.
 		b.WriteString("exists: unknown\nerror: path could not be resolved within the review workspace\n")
 		return tool.TextResult(b.String()), nil
 	}
@@ -409,11 +427,12 @@ func (t *pathStatTool) InvokableRun(_ context.Context, argsJSON string) (*tool.T
 	writeFileInfo(&b, "lstat_", info)
 
 	if info.Mode()&fs.ModeSymlink == 0 {
+		t.observations.record(rel, canonicalObservationTarget(t.root, rel), observationDigest(fingerprintFields(info, "", nil, nil, nil)...))
 		return tool.TextResult(b.String()), nil
 	}
 
-	target, err := r.Readlink(rel)
-	if err == nil {
+	target, linkErr := r.Readlink(rel)
+	if linkErr == nil {
 		fmt.Fprintf(&b, "symlink_target: %s\n", truncateForDisplay(target, 1024))
 	}
 	resolved, statErr := r.Stat(rel)
@@ -426,6 +445,11 @@ func (t *pathStatTool) InvokableRun(_ context.Context, argsJSON string) (*tool.T
 	default:
 		b.WriteString("target_within_root: false\n")
 	}
+	// The observation's fingerprint is built from the SAME info/target/
+	// resolved/statErr values already computed above to construct the
+	// model-visible text — zero additional filesystem calls, and the token
+	// is guaranteed to attest to the exact state that text describes.
+	t.observations.record(rel, canonicalObservationTarget(t.root, rel), observationDigest(fingerprintFields(info, target, linkErr, resolved, statErr)...))
 	return tool.TextResult(b.String()), nil
 }
 
@@ -584,6 +608,13 @@ const toolNameFilesystemRead = "evidence_filesystem_read"
 type readFileTool struct {
 	root    string
 	defRead int
+
+	// observations carries the target-sensitive observation InvokableRun
+	// captured for the most recent call against each rel it read, forward to
+	// the matching later ObservedRequirement call — see observation.go's
+	// observationCapture doc comment and this tool's own ObservedRequirement
+	// doc comment for why.
+	observations observationCapture
 }
 
 func newReadFileTool(root string, defRead int) *readFileTool {
@@ -646,6 +677,14 @@ func (t *readFileTool) InvokableRun(_ context.Context, argsJSON string) (*tool.T
 	if err != nil || rel == "." {
 		return tool.TextResult("error: path resolves outside the review workspace"), nil
 	}
+	// captureObservation runs synchronously, immediately before this
+	// function returns its result — as late as possible while still being
+	// inside InvokableRun's own synchronous execution — rather than being
+	// deferred to a later, separate ObservedRequirement call after the
+	// result has already left this function. See observation.go's
+	// observationCapture doc comment and this tool's own ObservedRequirement
+	// doc comment for why that timing is the actual fix.
+	defer t.captureObservation(rel)
 	limit := clampLimit(args.Limit, t.defRead, hardMaxReadBytes)
 
 	r, err := os.OpenRoot(t.root)
@@ -699,6 +738,24 @@ func (t *readFileTool) InvokableRun(_ context.Context, argsJSON string) (*tool.T
 	b.WriteString("---\n")
 	b.Write(content)
 	return tool.TextResult(b.String()), nil
+}
+
+// captureObservation records rel's target-sensitive observation for the
+// matching, later ObservedRequirement call to pick up (see
+// observation.go's observationCapture doc comment and readFileTool's own
+// ObservedRequirement doc comment for the full reasoning). Called via defer
+// from InvokableRun, so it always runs — regardless of which return branch
+// fired — synchronously, immediately before InvokableRun's result leaves
+// this function. A fingerprint error (e.g. the workspace root itself
+// becoming unavailable) simply records nothing, matching this file's
+// existing "ok=false, dropped, not fatal" contract for a missing
+// observation.
+func (t *readFileTool) captureObservation(rel string) {
+	fingerprint, err := filesystemObservationFingerprint(t.root, rel)
+	if err != nil {
+		return
+	}
+	t.observations.record(rel, canonicalObservationTarget(t.root, rel), fingerprint)
 }
 
 var _ tool.InvokableTool = (*readFileTool)(nil)

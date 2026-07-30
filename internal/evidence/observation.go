@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 
 	"github.com/looprig/harness/pkg/tool"
 )
@@ -63,16 +64,28 @@ import (
 //
 // ---- token derivation scheme (read this before changing anything below) --
 //
-// Both wired tools share ONE token formula,
-// filesystemObservationFingerprint(root, rel): a SHA-256 over the target
-// path's lstat-level identity (never following the final symlink) plus,
-// only when the path IS itself a symlink, its immediate link-target text and
-// the link target's own resolved metadata (when the link resolves at all).
-// This directly captures "whether the path is/was a symlink and what it
-// resolves to" — the exact signal design §13.4's own worked example (a
-// deletion target being swapped for a symlink between evidence-gathering
+// Both wired tools share ONE token FORMULA, implemented by
+// fingerprintFields/fingerprintAbsentFields below: a SHA-256 over the
+// target path's lstat-level identity (never following the final symlink)
+// plus, only when the path IS itself a symlink, its immediate link-target
+// text and the link target's own resolved metadata (when the link resolves
+// at all). This directly captures "whether the path is/was a symlink and
+// what it resolves to" — the exact signal design §13.4's own worked example
+// (a deletion target being swapped for a symlink between evidence-gathering
 // and auto-approval) requires; a token that omitted it would not defend
 // against the attack this mechanism exists to close.
+//
+// filesystemObservationFingerprint(root, rel) performs this formula against
+// a FRESH Lstat/Readlink/Stat lookup of its own, and is what readFileTool's
+// captureObservation uses (its own internal read syscalls don't produce an
+// Lstat-based result to reuse). pathStatTool instead calls
+// fingerprintFields/fingerprintAbsentFields DIRECTLY from InvokableRun,
+// reusing the exact Lstat/Readlink/Stat results it already computed to
+// build its own model-visible text — the same formula, zero additional
+// filesystem calls. Either way, the token is captured synchronously inside
+// InvokableRun (via observationCapture, see below) and never re-derived
+// later from ObservedRequirement — see fingerprintFields's own doc comment
+// for why that distinction is the actual TOCTOU fix this file implements.
 //
 // Concretely, for a target that EXISTS, the hashed field sequence (via
 // observationDigest, see its own doc comment for the exact wire encoding)
@@ -119,10 +132,18 @@ import (
 // ObservedRequirement doc comment below for why).
 
 // filesystemObservationFingerprint computes the token described above for
-// one root-relative path. It is the SOLE token formula for every
-// tool.EvidenceObservation implementation in this file — pathStatTool and
-// readFileTool call it identically, so a target's fingerprint means the
-// same thing regardless of which tool observed it.
+// one root-relative path by performing its own fresh Lstat/Readlink/Stat
+// lookups. It is the SOLE token FORMULA for every tool.EvidenceObservation
+// implementation in this file — pathStatTool and readFileTool ultimately
+// produce a token via the exact same field sequence, so a target's
+// fingerprint means the same thing regardless of which tool observed it —
+// but it is deliberately NOT how pathStatTool captures its own observation
+// (see fingerprintFields's doc comment for why performing a fresh lookup
+// here would reopen the TOCTOU gap this whole mechanism exists to close).
+// It remains the right tool for readFileTool, whose own internal read
+// syscalls (Open, which follows symlinks, then Stat on the open file
+// descriptor) do not themselves compute an Lstat-based result to reuse; see
+// readFileTool's own ObservedRequirement doc comment.
 func filesystemObservationFingerprint(root, rel string) (string, error) {
 	r, err := os.OpenRoot(root)
 	if err != nil {
@@ -133,36 +154,129 @@ func filesystemObservationFingerprint(root, rel string) (string, error) {
 	info, err := r.Lstat(rel)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return observationDigest("fsv1", "absent"), nil
+		return observationDigest(fingerprintAbsentFields()...), nil
 	case err != nil:
 		return "", err
 	}
 
-	fields := []string{"fsv1", "present"}
-	fields = append(fields, fileInfoFingerprintFields(info)...)
-
 	if info.Mode()&fs.ModeSymlink == 0 {
-		return observationDigest(fields...), nil
+		return observationDigest(fingerprintFields(info, "", nil, nil, nil)...), nil
 	}
 
 	target, linkErr := r.Readlink(rel)
 	if linkErr != nil {
-		fields = append(fields, "link_unreadable")
-		return observationDigest(fields...), nil
+		return observationDigest(fingerprintFields(info, "", linkErr, nil, nil)...), nil
 	}
-	fields = append(fields, "link_target", target)
-
 	resolved, statErr := r.Stat(rel)
+	return observationDigest(fingerprintFields(info, target, nil, resolved, statErr)...), nil
+}
+
+// fingerprintAbsentFields is the field sequence for a target that does NOT
+// exist — see this file's top-of-file doc comment for why absence is a
+// real, valid observation rather than "no observation."
+func fingerprintAbsentFields() []string {
+	return []string{"fsv1", "absent"}
+}
+
+// fingerprintFields is the PURE, I/O-free half of the token formula for a
+// target that DOES exist: given an already-performed Lstat result (info)
+// and — only when info is itself a symlink — the outcome of already
+// resolving it (linkTarget/linkErr from Readlink, resolved/resolvedErr from
+// a subsequent Stat), it assembles the exact "fsv1"/"present"/... field
+// sequence this file's top-of-file doc comment specifies. It performs no
+// lookup of its own.
+//
+// This is deliberately split out from filesystemObservationFingerprint (the
+// I/O-performing half) so a caller that has ALREADY performed these exact
+// lookups — as pathStatTool.InvokableRun always has, to build its own
+// model-visible result — can feed this function the SAME info/linkTarget/
+// resolved values it already holds, with zero additional filesystem calls,
+// rather than asking filesystemObservationFingerprint to open the root and
+// look everything up a second time. That distinction is the actual fix for
+// the review finding this file addresses: the observation token must
+// attest to the exact state InvokableRun's own result was built from, never
+// a fresh, later, independent look — see pathStatTool's ObservedRequirement
+// doc comment and observationCapture below for how that state is carried
+// from InvokableRun forward to ObservedRequirement.
+func fingerprintFields(info fs.FileInfo, linkTarget string, linkErr error, resolved fs.FileInfo, resolvedErr error) []string {
+	fields := []string{"fsv1", "present"}
+	fields = append(fields, fileInfoFingerprintFields(info)...)
+	if info.Mode()&fs.ModeSymlink == 0 {
+		return fields
+	}
+	if linkErr != nil {
+		return append(fields, "link_unreadable")
+	}
+	fields = append(fields, "link_target", linkTarget)
 	switch {
-	case statErr == nil:
+	case resolvedErr == nil:
 		fields = append(fields, "link_resolved")
 		fields = append(fields, fileInfoFingerprintFields(resolved)...)
-	case errors.Is(statErr, fs.ErrNotExist):
+	case errors.Is(resolvedErr, fs.ErrNotExist):
 		fields = append(fields, "link_target_absent")
 	default:
 		fields = append(fields, "link_target_unresolvable")
 	}
-	return observationDigest(fields...), nil
+	return fields
+}
+
+// observationCapture holds, per root-relative path, the target/token pair
+// most recently captured DURING an InvokableRun call for that path — never
+// independently recomputed later. record is called from InvokableRun itself
+// (see pathStatTool's and readFileTool's own InvokableRun for exactly
+// where), synchronously, before InvokableRun returns its result up through
+// the evidence runtime; lookup is called from the matching ObservedRequirement
+// call the evidence runtime's own strictly sequential per-call loop always
+// issues immediately afterward (internal/hustleruntime/evidence_runner.go:
+// executeEvidenceCall's InvokableRun, THEN recordEvidenceObservation's
+// ObservedRequirement, before the next call in the loop begins). lookup does
+// NOT delete on read: the evidence runtime is free to call ObservedRequirement
+// more than once for the same completed call (harmless — it is a pure
+// accessor from Harness's side), and a stale entry can only ever be read by
+// a rel path whose most recent InvokableRun genuinely produced it, since a
+// later InvokableRun call for the same rel always overwrites it first.
+//
+// Keyed by rel rather than a single unkeyed slot purely as defense in
+// depth: InvokableRun has no access to a per-call execution identity (that
+// is Harness-internal state, never exposed to tool.InvokableTool's
+// signature), so rel is the only stable, available correlation key: if this
+// package's strictly-sequential-per-call invariant were ever violated
+// elsewhere, a keyed map fails closed (a mismatched/absent entry) rather
+// than silently returning some OTHER call's observation for the wrong
+// target.
+type observationCapture struct {
+	mu      sync.Mutex
+	pending map[string]capturedObservation
+}
+
+type capturedObservation struct {
+	target string
+	token  string
+}
+
+// record stores the target/token pair captured during the InvokableRun call
+// for rel, overwriting whatever was previously recorded for rel.
+func (c *observationCapture) record(rel, target, token string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pending == nil {
+		c.pending = make(map[string]capturedObservation, 1)
+	}
+	c.pending[rel] = capturedObservation{target: target, token: token}
+}
+
+// lookup returns the most recently recorded target/token pair for rel.
+// ok=false means no InvokableRun call has yet recorded an observation for
+// rel — treated identically to every other "this call made no
+// target-sensitive observation" case (see filesystemObservationRequirement).
+func (c *observationCapture) lookup(rel string) (target, token string, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	captured, found := c.pending[rel]
+	if !found {
+		return "", "", false
+	}
+	return captured.target, captured.token, true
 }
 
 // fileInfoFingerprintFields is the exact 4-tuple every lstat/stat result
@@ -236,25 +350,50 @@ func filesystemObservationRequirement(request tool.Request, kind string) (root, 
 // worked example ("confirms a deletion target is empty/non-symlinked") is
 // exactly an absence observation, and absence is exactly as TOCTOU-relevant
 // as presence (see filesystemObservationFingerprint's doc comment).
+//
+// It performs NO filesystem lookup of its own: the token was already
+// captured by InvokableRun, from the identical Lstat/Readlink/Stat results
+// InvokableRun used to build its own model-visible result, and stashed in
+// t.observations. Deriving it here via a fresh, independent restat (the
+// pre-fix design) would reopen exactly the TOCTOU gap this mechanism exists
+// to close — an attacker able to swap the target in the window between
+// InvokableRun returning (with the model already having seen its result)
+// and the evidence runtime calling ObservedRequirement afterward would have
+// the swapped, post-attack state recorded as the "baseline," not what the
+// model actually reasoned about. A rel with no captured entry (ok=false)
+// means no matching InvokableRun call ever ran for it — dropped, not fatal,
+// per filesystemObservationRequirement's own contract.
 func (t *pathStatTool) ObservedRequirement(request tool.Request, _ *tool.ToolResult) (target, token string, ok bool) {
 	root, rel, ok := filesystemObservationRequirement(request, KindFilesystemStat)
-	if !ok {
+	if !ok || root != t.root {
 		return "", "", false
 	}
-	fingerprint, err := filesystemObservationFingerprint(root, rel)
-	if err != nil {
-		return "", "", false
-	}
-	return canonicalObservationTarget(root, rel), fingerprint, true
+	return t.observations.lookup(rel)
 }
 
 var _ tool.EvidenceObservation = (*pathStatTool)(nil)
 
 // ObservedRequirement implements tool.EvidenceObservation for
-// evidence_filesystem_read, reusing filesystemObservationFingerprint
-// UNCHANGED from pathStatTool's own implementation — deliberately, not as
-// an oversight. tool.Request carries only ToolName/Summary/ExecutionID/
-// Command/WorkingDirectory/ExpiresAtUnixMilli/Requirements; a read call's
+// evidence_filesystem_read. Like pathStatTool's, it performs no lookup of
+// its own here — it returns whatever InvokableRun already captured into
+// t.observations (see readFileTool.captureObservation) — but unlike
+// pathStatTool, that capture itself still requires ONE fresh
+// filesystemObservationFingerprint call: readFileTool's own internal read
+// syscalls (Open, which follows a within-root symlink, then Stat on the
+// already-open file descriptor) never compute an Lstat-based result the
+// token formula could reuse directly, and reusing the identical
+// lstat/symlink-chain formula Stat uses (rather than a resolved-target,
+// content-following one) is a deliberate, documented choice — see the
+// paragraph below. The fix for the review finding this file addresses is
+// not "zero filesystem calls for Read" (not achievable without abandoning
+// that documented formula) but WHEN that call happens: captureObservation
+// runs synchronously via defer, immediately before InvokableRun returns —
+// not later, after the result has already left this function and crossed
+// back through the evidence runtime — which is what closes the actual
+// TOCTOU window the finding identified.
+//
+// tool.Request carries only ToolName/Summary/ExecutionID/Command/
+// WorkingDirectory/ExpiresAtUnixMilli/Requirements; a read call's
 // offset/limit arguments never reach it (readFileTool's PrepareCall records
 // only Requirement{Kind, Scope: root, Match: rel, Description}, exactly
 // like every other tool in this package). A token that depended on the
@@ -271,14 +410,10 @@ var _ tool.EvidenceObservation = (*pathStatTool)(nil)
 // accepts.
 func (t *readFileTool) ObservedRequirement(request tool.Request, _ *tool.ToolResult) (target, token string, ok bool) {
 	root, rel, ok := filesystemObservationRequirement(request, KindFilesystemRead)
-	if !ok || rel == "." {
+	if !ok || rel == "." || root != t.root {
 		return "", "", false
 	}
-	fingerprint, err := filesystemObservationFingerprint(root, rel)
-	if err != nil {
-		return "", "", false
-	}
-	return canonicalObservationTarget(root, rel), fingerprint, true
+	return t.observations.lookup(rel)
 }
 
 var _ tool.EvidenceObservation = (*readFileTool)(nil)

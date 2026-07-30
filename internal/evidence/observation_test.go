@@ -173,6 +173,64 @@ func TestPathStatObservationTokenChangesWhenTargetSwappedForSymlink(t *testing.T
 	}
 }
 
+// TestPathStatObservationTokenAnchoredToInvokableRunNotALaterRestat is the
+// fix for a review finding: ObservedRequirement used to derive its token
+// from a THIRD independent Lstat call performed when ObservedRequirement
+// itself runs — which happens AFTER InvokableRun has already returned the
+// model-visible result (see internal/hustleruntime/evidence_runner.go's own
+// per-call sequence: executeEvidenceCall runs InvokableRun and returns
+// result, THEN recordEvidenceObservation calls ObservedRequirement
+// afterward, in a separate step). A target swapped in that window would
+// have its token reflect the ATTACKER's post-swap state as the recorded
+// "baseline" — even though the model's actual assessment was based on the
+// original, pre-swap state InvokableRun's result described. The token must
+// instead be captured DURING InvokableRun itself, anchored to the exact
+// state its own result was built from.
+func TestPathStatObservationTokenAnchoredToInvokableRunNotALaterRestat(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "a.txt"), "hello")
+	statTool := newPathStatTool(root)
+
+	request, _, err := statTool.PrepareCall(context.Background(), mustExecID(t), `{"path":"a.txt"}`)
+	if err != nil {
+		t.Fatalf("PrepareCall: %v", err)
+	}
+
+	// The pre-swap fingerprint is exactly what InvokableRun's own result is
+	// about to be built from — captured here purely as this test's
+	// independent expectation, before InvokableRun runs at all.
+	wantToken, err := filesystemObservationFingerprint(root, "a.txt")
+	if err != nil {
+		t.Fatalf("filesystemObservationFingerprint: %v", err)
+	}
+
+	result, err := statTool.InvokableRun(context.Background(), `{"path":"a.txt"}`)
+	if err != nil {
+		t.Fatalf("InvokableRun: %v", err)
+	}
+
+	// Attacker swap happens in the window AFTER InvokableRun has already
+	// produced the model-visible result, but BEFORE ObservedRequirement is
+	// invoked.
+	target := filepath.Join(root, "a.txt")
+	if err := os.Remove(target); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	mustWrite(t, filepath.Join(root, "elsewhere.txt"), "attacker-controlled content")
+	if err := os.Symlink(filepath.Join(root, "elsewhere.txt"), target); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	_, token, ok := statTool.ObservedRequirement(request, result)
+	if !ok {
+		t.Fatalf("ObservedRequirement: ok = false")
+	}
+
+	if token != wantToken {
+		t.Fatalf("token = %q, want %q (the pre-swap state InvokableRun actually observed) — ObservedRequirement must not perform its own later, independent restat", token, wantToken)
+	}
+}
+
 func TestPathStatObservedRequirementRejectsMismatchedRequirement(t *testing.T) {
 	statTool := newPathStatTool(t.TempDir())
 	badRequest := tool.Request{
@@ -260,6 +318,49 @@ func TestReadFileObservationTokenChangesWhenTargetSwappedForSymlink(t *testing.T
 
 	if tokenBefore == tokenAfter {
 		t.Errorf("token did not change after the real file was swapped for a symlink: both %q", tokenBefore)
+	}
+}
+
+// TestReadFileObservationTokenAnchoredToInvokableRunNotALaterRestat mirrors
+// TestPathStatObservationTokenAnchoredToInvokableRunNotALaterRestat for
+// evidence_filesystem_read — see that test's doc comment for the full
+// scenario.
+func TestReadFileObservationTokenAnchoredToInvokableRunNotALaterRestat(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "a.txt"), "hello world")
+	readTool := newReadFileTool(root, 64<<10)
+
+	request, _, err := readTool.PrepareCall(context.Background(), mustExecID(t), `{"path":"a.txt","offset":0,"limit":0}`)
+	if err != nil {
+		t.Fatalf("PrepareCall: %v", err)
+	}
+
+	wantToken, err := filesystemObservationFingerprint(root, "a.txt")
+	if err != nil {
+		t.Fatalf("filesystemObservationFingerprint: %v", err)
+	}
+
+	result, err := readTool.InvokableRun(context.Background(), `{"path":"a.txt","offset":0,"limit":0}`)
+	if err != nil {
+		t.Fatalf("InvokableRun: %v", err)
+	}
+
+	target := filepath.Join(root, "a.txt")
+	if err := os.Remove(target); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	mustWrite(t, filepath.Join(root, "elsewhere.txt"), "attacker-controlled content")
+	if err := os.Symlink(filepath.Join(root, "elsewhere.txt"), target); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	_, token, ok := readTool.ObservedRequirement(request, result)
+	if !ok {
+		t.Fatalf("ObservedRequirement: ok = false")
+	}
+
+	if token != wantToken {
+		t.Fatalf("token = %q, want %q (the pre-swap state InvokableRun actually observed) — ObservedRequirement must not perform its own later, independent restat", token, wantToken)
 	}
 }
 
