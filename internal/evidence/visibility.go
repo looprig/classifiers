@@ -93,6 +93,31 @@ func RemoteVisibilityHint(remoteURL string) string {
 	return "unknown"
 }
 
+// sanitizeRemoteURL strips any embedded userinfo (a "user:password@" or bare
+// "user@" authority prefix) from a scheme-based remoteURL before it is ever
+// placed into model-visible evidence or passed to RemoteVisibilityHint. A
+// remote configured over HTTPS with an embedded credential — common in CI
+// checkouts, e.g. "https://user:ghp_xxxx@github.com/org/repo.git" — would
+// otherwise leak that credential verbatim into the tool result the LLM
+// provider sees; this package otherwise scrupulously avoids capturing
+// stderr for exactly this class of reason (see runGit's doc comment), so
+// letting a credential through here would be a real inconsistency.
+//
+// SCP-like Git syntax ("user@host:path", almost always "git@host:path") is
+// deliberately left unchanged: net/url does not parse it as a URL carrying
+// userinfo at all (url.Parse errors on it — see hostOf's own fallback), and
+// unlike a URL's userinfo component, SCP syntax has no password field to
+// begin with, so there is no credential to strip and reporting the account
+// name is not a leak.
+func sanitizeRemoteURL(remoteURL string) string {
+	parsed, err := url.Parse(remoteURL)
+	if err != nil || parsed.User == nil || parsed.Host == "" {
+		return remoteURL
+	}
+	parsed.User = nil
+	return parsed.String()
+}
+
 // hostOf extracts a host from either a well-formed URL
 // (scheme://host/path) or SCP-like Git syntax (user@host:path). It never
 // executes, follows, or otherwise resolves the URL — this is pure string

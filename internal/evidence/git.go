@@ -541,13 +541,22 @@ func (t *gitRemotesTool) InvokableRun(ctx context.Context, argsJSON string) (*to
 	var b strings.Builder
 	fmt.Fprintf(&b, "remotes: %d\n", len(remotes))
 	for _, remote := range remotes {
+		// The VisibilityResolver is a consumer-supplied, explicitly
+		// configured, governed lookup (see VisibilityResolver's own doc
+		// comment) — it receives the exact, unmodified fetch URL, since a
+		// real implementation may legitimately need any embedded
+		// credential to authenticate its own read-only lookup. Everything
+		// derived from remote.fetchURL that becomes MODEL-VISIBLE below
+		// (the reported fetch URL and the hint) instead uses
+		// sanitizedFetchURL: never the raw value.
 		visibility := resolveVisibility(ctx, t.visibility, remote.fetchURL)
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		hint := RemoteVisibilityHint(remote.fetchURL)
+		sanitizedFetchURL := sanitizeRemoteURL(remote.fetchURL)
+		hint := RemoteVisibilityHint(sanitizedFetchURL)
 		fmt.Fprintf(&b, "- %s fetch=%s hint=%s visibility=%s\n",
-			remote.name, remote.fetchURL, hint, visibility)
+			remote.name, sanitizedFetchURL, hint, visibility)
 	}
 	return tool.TextResult(b.String()), nil
 }

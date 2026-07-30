@@ -130,6 +130,71 @@ func TestBehavior_RemoteVisibilityHint(t *testing.T) {
 	}
 }
 
+// TestSanitizeRemoteURLStripsUserinfo is the fix for a review finding:
+// evidence_git_remotes previously echoed `git remote -v` fetch URLs verbatim
+// into model-visible evidence. A remote configured over HTTPS with an
+// embedded credential (common in CI checkouts, e.g.
+// "https://user:ghp_xxxx@github.com/...") would leak that credential
+// straight into the tool result the LLM provider sees. sanitizeRemoteURL
+// must strip any embedded userinfo from a scheme-based URL before it is
+// used anywhere model-visible, while leaving SCP-like Git syntax
+// ("user@host:path") unchanged: that syntax has no password component at
+// all (only an account name, almost always "git"), net/url does not parse
+// it as carrying userinfo, and there is no credential there to strip.
+func TestSanitizeRemoteURLStripsUserinfo(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "username and password/token stripped",
+			in:   "https://alice:ghp_supersecrettoken@github.com/org/repo.git",
+			want: "https://github.com/org/repo.git",
+		},
+		{
+			name: "bare username stripped",
+			in:   "https://alice@github.com/org/repo.git",
+			want: "https://github.com/org/repo.git",
+		},
+		{
+			name: "ssh scheme with bare username stripped",
+			in:   "ssh://git@github.com/org/repo.git",
+			want: "ssh://github.com/org/repo.git",
+		},
+		{
+			name: "no userinfo present is unchanged",
+			in:   "https://github.com/org/repo.git",
+			want: "https://github.com/org/repo.git",
+		},
+		{
+			name: "scp-like syntax has no password component and is left unchanged",
+			in:   "git@gitlab.com:example/repo.git",
+			want: "git@gitlab.com:example/repo.git",
+		},
+		{
+			name: "local filesystem path is unchanged",
+			in:   "/local/path/repo.git",
+			want: "/local/path/repo.git",
+		},
+		{
+			name: "empty string is unchanged",
+			in:   "",
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := sanitizeRemoteURL(tt.in); got != tt.want {
+				t.Errorf("sanitizeRemoteURL(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBehavior_Visibility_ValidVisibilityEnum(t *testing.T) {
 	t.Parallel()
 	for _, v := range []Visibility{VisibilityUnknown, VisibilityPublic, VisibilityPrivate, VisibilityInternal} {

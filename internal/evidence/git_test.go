@@ -573,6 +573,38 @@ func TestBehavior_Git_Remotes(t *testing.T) {
 	}
 }
 
+// TestSecurity_Git_Remotes_CredentialsStrippedFromModelVisibleResult is the
+// fix for a review finding: `git remote -v` output was passed through
+// verbatim into the tool result the LLM provider sees. A remote configured
+// with embedded userinfo (common in CI checkouts, e.g.
+// "https://user:token@host/...") must never leak that credential into
+// model-visible evidence, while the credential-free parts of the URL (and
+// the visibility hint derived from it) must still be reported.
+func TestSecurity_Git_Remotes_CredentialsStrippedFromModelVisibleResult(t *testing.T) {
+	t.Parallel()
+	fx := newGitFixture(t)
+	runTestGit(t, fx.root, "remote", "add", "origin", "https://alice:ghp_supersecrettoken@github.com/org/repo.git")
+
+	rt := newGitRemotesTool(fx.root, fx.binary, nil)
+	_, prepErr, result, runErr := prepareAndRun(context.Background(), t, rt, `{}`)
+	if prepErr != nil || runErr != nil {
+		t.Fatalf("prepErr=%v runErr=%v", prepErr, runErr)
+	}
+	text := resultText(t, result)
+	if strings.Contains(text, "ghp_supersecrettoken") {
+		t.Fatalf("model-visible remotes result leaks the embedded credential: %q", text)
+	}
+	if strings.Contains(text, "alice") {
+		t.Fatalf("model-visible remotes result leaks the embedded username: %q", text)
+	}
+	if !strings.Contains(text, "fetch=https://github.com/org/repo.git") {
+		t.Fatalf("model-visible remotes result should still report the credential-free URL: %q", text)
+	}
+	if !strings.Contains(text, "hint=github.com") {
+		t.Fatalf("visibility hint should still be derived from the credential-free host: %q", text)
+	}
+}
+
 type fakeVisibilityResolver struct {
 	result Visibility
 	err    error
