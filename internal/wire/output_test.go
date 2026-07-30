@@ -19,7 +19,7 @@ import (
 // command.execute requirement) and satisfies gate's own construction
 // invariants (exactly one user message and one active assistant tool
 // request entry, absolute workspace paths, etc).
-func validSubject(t *testing.T) gate.PermissionReviewSubject {
+func validSubject(t testing.TB) gate.PermissionReviewSubject {
 	t.Helper()
 
 	toolExecutionID := uuid.MustParse("123e4567-e89b-12d3-a456-426614174110")
@@ -74,7 +74,7 @@ func validSubject(t *testing.T) gate.PermissionReviewSubject {
 // validOutputJSON returns the raw model output that echoes subject's basis
 // verbatim and carries the given risk/rationale, a valid low-risk default
 // unless overridden by the caller.
-func validOutputJSON(t *testing.T, subject gate.PermissionReviewSubject, mutate func(map[string]any)) []byte {
+func validOutputJSON(t testing.TB, subject gate.PermissionReviewSubject, mutate func(map[string]any)) []byte {
 	t.Helper()
 
 	basis := map[string]any{
