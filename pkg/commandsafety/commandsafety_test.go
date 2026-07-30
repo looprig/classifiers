@@ -167,7 +167,9 @@ func TestNewDescriptorIdentityChangesWithPolicyRevision(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 	options := validOptions()
-	options.Policy = commandsafety.Policy{Revision: "command-safety-policy/v2-test"}
+	secondPolicy := commandsafety.DefaultPolicy()
+	secondPolicy.Revision = "command-safety-policy/v2-test"
+	options.Policy = secondPolicy
 	second, err := commandsafety.New(options)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -239,6 +241,83 @@ func TestNewRejectsEmptyPolicyRevision(t *testing.T) {
 	options.Policy = commandsafety.Policy{Revision: "   "}
 	_, err := commandsafety.New(options)
 	assertConstructionError(t, err, commandsafety.FieldPolicy)
+}
+
+// TestNewRejectsPolicyMissingAbsoluteHumanFloor is the fix for a review
+// finding: a caller-supplied Policy with only a Revision (nil taxonomy maps)
+// used to pass New unchanged, and a model verdict carrying, for example,
+// prompt_injection at medium risk with allow would then become
+// auto-approve-eligible end to end under Harness's own default gate policy —
+// because this classifier's own taxonomy, the thing that is supposed to
+// floor its self-uncertainty/safety categories, was silently empty. New must
+// now refuse to construct a classifier whose Policy.AbsoluteHumanCategories
+// does not cover the fixed floor set in AbsoluteHumanCategoryFloor,
+// regardless of what else a caller configures.
+func TestNewRejectsPolicyMissingAbsoluteHumanFloor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		policy commandsafety.Policy
+	}{
+		{
+			name:   "policy with only a revision and no taxonomy at all",
+			policy: commandsafety.Policy{Revision: "tenant-policy/v1"},
+		},
+		{
+			name: "policy missing exactly one floor category (prompt_injection)",
+			policy: func() commandsafety.Policy {
+				p := commandsafety.DefaultPolicy()
+				p.Revision = "tenant-policy/v2"
+				delete(p.AbsoluteHumanCategories, gate.ReviewCategoryPromptInjection)
+				return p
+			}(),
+		},
+		{
+			name: "policy with a nil AbsoluteHumanCategories map but a populated CategoryMinimumRisk",
+			policy: func() commandsafety.Policy {
+				p := commandsafety.DefaultPolicy()
+				p.Revision = "tenant-policy/v3"
+				p.AbsoluteHumanCategories = nil
+				return p
+			}(),
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			options := validOptions()
+			options.Policy = tt.policy
+			_, err := commandsafety.New(options)
+			if err == nil {
+				t.Fatal("New() error = nil, want a *ConstructionError rejecting the incomplete taxonomy")
+			}
+			var constructionErr *commandsafety.ConstructionError
+			if !errors.As(err, &constructionErr) {
+				t.Fatalf("New() error = %v, want a *commandsafety.ConstructionError", err)
+			}
+			if constructionErr.Field != commandsafety.FieldPolicy {
+				t.Fatalf("ConstructionError.Field = %q, want %q", constructionErr.Field, commandsafety.FieldPolicy)
+			}
+			if !errors.Is(err, commandsafety.ErrPolicyMissingAbsoluteHumanFloor) {
+				t.Fatalf("New() error does not wrap ErrPolicyMissingAbsoluteHumanFloor: %v", err)
+			}
+		})
+	}
+}
+
+// TestNewAcceptsDefaultPolicyFloor proves DefaultPolicy itself always
+// satisfies the floor New now requires — the common case must never be
+// broken by this fix.
+func TestNewAcceptsDefaultPolicyFloor(t *testing.T) {
+	t.Parallel()
+
+	options := validOptions()
+	options.Policy = commandsafety.DefaultPolicy()
+	if _, err := commandsafety.New(options); err != nil {
+		t.Fatalf("New() with DefaultPolicy() error = %v, want nil", err)
+	}
 }
 
 func TestNewRejectsEmptyEvidencePolicy(t *testing.T) {

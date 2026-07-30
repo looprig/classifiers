@@ -3,6 +3,7 @@ package commandsafety
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"time"
@@ -111,6 +112,51 @@ type Options struct {
 	Evidence  hustle.EvidenceToolPolicy
 }
 
+// AbsoluteHumanCategoryFloor is the minimum set of gate.ReviewRiskCategory
+// values every Policy passed to New must mark absolute-human (via
+// Policy.AbsoluteHumanCategories), regardless of what else a caller
+// configures. These are exactly the categories representing the classifier
+// being uncertain about itself (gate.ReviewCategoryAuthorizationConflict,
+// gate.ReviewCategoryTargetAmbiguity, gate.ReviewCategoryInsufficientEvidence
+// — conflicting authorization evidence, an unidentifiable target, or a fact
+// the classifier could not establish even after investigation) or a class of
+// harm severe enough that no policy configuration should ever be able to
+// permit auto-approval (gate.ReviewCategoryDataExfiltration,
+// gate.ReviewCategoryPromptInjection). A caller-supplied Policy may always
+// mark MORE categories absolute-human than this; New only ever floors the
+// set, never widens what a caller can additionally restrict. This closes a
+// real gap: a Policy with an empty or partial AbsoluteHumanCategories used to
+// pass New unchanged, silently discarding this classifier's own safety
+// taxonomy and letting internal/policy.Reconcile validate a model's
+// assessment against nothing.
+var AbsoluteHumanCategoryFloor = []gate.ReviewRiskCategory{
+	gate.ReviewCategoryDataExfiltration,
+	gate.ReviewCategoryPromptInjection,
+	gate.ReviewCategoryAuthorizationConflict,
+	gate.ReviewCategoryTargetAmbiguity,
+	gate.ReviewCategoryInsufficientEvidence,
+}
+
+// ErrPolicyMissingAbsoluteHumanFloor is the sentinel New's *ConstructionError
+// wraps as Cause when a caller-supplied Policy's AbsoluteHumanCategories does
+// not cover every category in AbsoluteHumanCategoryFloor. Use errors.Is to
+// detect this specific rejection reason.
+var ErrPolicyMissingAbsoluteHumanFloor = errors.New(
+	"commandsafety: policy AbsoluteHumanCategories must cover the classifier's own self-uncertainty/safety floor",
+)
+
+// missingAbsoluteHumanFloor reports every category in AbsoluteHumanCategoryFloor
+// that is missing from have, in AbsoluteHumanCategoryFloor's own fixed order.
+func missingAbsoluteHumanFloor(have map[gate.ReviewRiskCategory]struct{}) []gate.ReviewRiskCategory {
+	var missing []gate.ReviewRiskCategory
+	for _, category := range AbsoluteHumanCategoryFloor {
+		if _, ok := have[category]; !ok {
+			missing = append(missing, category)
+		}
+	}
+	return missing
+}
+
 // ConstructionField identifies the Options field a construction error
 // concerns.
 type ConstructionField string
@@ -125,9 +171,11 @@ const (
 )
 
 // ConstructionError reports why New rejected its Options. Cause, when
-// present, is an already secret-free typed error from Harness's own
-// construction machinery (hustle.DefinitionError, model.ValidationError):
-// never raw request content.
+// present, is either an already secret-free typed error from Harness's own
+// construction machinery (hustle.DefinitionError, model.ValidationError) or
+// one of this package's own construction-time validation sentinels (e.g.
+// ErrPolicyMissingAbsoluteHumanFloor, optionally wrapping the fixed,
+// non-secret enum values that failed validation): never raw request content.
 type ConstructionError struct {
 	Field ConstructionField
 	Cause error
@@ -172,6 +220,12 @@ func New(options Options) (*Classifier, error) {
 	policyRevision := strings.TrimSpace(options.Policy.Revision)
 	if policyRevision == "" {
 		return nil, &ConstructionError{Field: FieldPolicy}
+	}
+	if missing := missingAbsoluteHumanFloor(options.Policy.AbsoluteHumanCategories); len(missing) > 0 {
+		return nil, &ConstructionError{
+			Field: FieldPolicy,
+			Cause: fmt.Errorf("%w: missing %v", ErrPolicyMissingAbsoluteHumanFloor, missing),
+		}
 	}
 	// A tool-using structured Hustle (design §12.3) requires at least one
 	// evidence tool definition: hustle.EvidenceToolPolicy{} (the zero value)

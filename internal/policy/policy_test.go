@@ -864,6 +864,48 @@ func TestReconcileInsufficientEvidenceIsAlwaysAbsoluteHuman(t *testing.T) {
 	}
 }
 
+// TestReconcileFailsClosedOnOutOfDomainRisk is the fix for a review finding:
+// gate.ReviewRisk is documented as a closed 4-value enum (low/medium/high/
+// critical), but Reconcile's own critical-risk check and its
+// MinimumAuthorization lookup both compare assessment.Risk by exact value —
+// neither one matches an out-of-domain value (the zero value "", or any
+// other string), so an assessment carrying one skipped every tightening
+// check and its allow recommendation survived untouched. Reconcile is a
+// fail-secure function and must not rely on its caller (in production,
+// internal/wire's strict decoders) to have already enforced the closed enum
+// before it runs: an out-of-domain risk value must itself tighten to
+// needs_human, the same as critical risk does.
+func TestReconcileFailsClosedOnOutOfDomainRisk(t *testing.T) {
+	t.Parallel()
+	subject := newSubject(t)
+	p := policy.DefaultPolicy()
+
+	tests := []struct {
+		name string
+		risk gate.ReviewRisk
+	}{
+		{name: "the zero value", risk: gate.ReviewRisk("")},
+		{name: "an unrecognized string", risk: gate.ReviewRisk("severe")},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assessment := gate.PermissionAssessment{
+				Basis:          subject.Basis,
+				Risk:           tt.risk,
+				Authorization:  gate.ReviewAuthorizationUnknown,
+				Recommendation: gate.ReviewAllow,
+				Rationale:      "synthetic fixture rationale for an out-of-domain risk value",
+			}
+			got := policy.Reconcile(p, assessment)
+			if got.Recommendation != gate.ReviewNeedsHuman {
+				t.Fatalf("Reconcile().Recommendation = %q, want %q for out-of-domain risk %q", got.Recommendation, gate.ReviewNeedsHuman, tt.risk)
+			}
+		})
+	}
+}
+
 func TestPolicyCloneIsIndependentOfSource(t *testing.T) {
 	t.Parallel()
 

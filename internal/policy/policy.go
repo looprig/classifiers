@@ -130,6 +130,14 @@ func (p Policy) Clone() Policy {
 // recommend allow is already the most conservative outcome and is returned
 // unchanged. Otherwise, Reconcile checks, in order:
 //
+//  0. A risk value outside the closed four-value gate.ReviewRisk enum
+//     (low/medium/high/critical) — including the zero value — always needs
+//     a human. Reconcile is a fail-secure function and must not depend on
+//     its caller having already enforced the closed enum (in production,
+//     internal/wire's strict decoders do, before Reconcile ever runs, but
+//     Reconcile itself must not rely on that): riskRank returns 0 for
+//     exactly this case and for no valid enum value, so this check and the
+//     critical-risk check below share one comparison.
 //  1. Critical risk always needs a human, regardless of category or
 //     authorization.
 //  2. Any category in p.AbsoluteHumanCategories always needs a human, at any
@@ -147,7 +155,7 @@ func Reconcile(p Policy, assessment gate.PermissionAssessment) gate.PermissionAs
 	if assessment.Recommendation != gate.ReviewAllow {
 		return assessment
 	}
-	if assessment.Risk == gate.ReviewRiskCritical {
+	if riskRank(assessment.Risk) == 0 || assessment.Risk == gate.ReviewRiskCritical {
 		assessment.Recommendation = gate.ReviewNeedsHuman
 		return assessment
 	}
