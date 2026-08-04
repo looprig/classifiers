@@ -135,11 +135,11 @@ github.com/gorilla/websocket
 # github.com/invopop/jsonschema v0.14.0
 ## explicit; go 1.24
 github.com/invopop/jsonschema
-# github.com/looprig/core v0.2.0 => ../core
+# github.com/looprig/core v0.5.0 => ../core
 ## explicit; go 1.25.8
 github.com/looprig/core/content
 github.com/looprig/core/uuid
-# github.com/looprig/harness v0.0.0 => ../harness-permission-classifier
+# github.com/looprig/harness v0.19.0 => ../harness
 ## explicit; go 1.26.4
 github.com/looprig/harness/pkg/gate
 github.com/looprig/harness/pkg/hustle
@@ -686,6 +686,6 @@ honnef.co/go/tools/stylecheck/st1021
 honnef.co/go/tools/stylecheck/st1022
 honnef.co/go/tools/stylecheck/st1023
 honnef.co/go/tools/unused
-# github.com/looprig/harness => ../harness-permission-classifier
+# github.com/looprig/harness => ../harness
 # github.com/looprig/core => ../core
 # github.com/looprig/inference => ../inference
