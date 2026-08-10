@@ -10,7 +10,7 @@ classifiers — their prompts, wire codecs, risk policy, evidence-tool
 catalogs, and evaluation corpus.
 
 Harness never imports this module. This module imports Harness's public
-contracts. A consumer (for example, CodeRig) imports both and explicitly
+contracts. A consumer (for example, Carbon) imports both and explicitly
 selects which classifiers to register; zero registered classifiers preserves
 Harness's existing gate behavior exactly.
 
@@ -30,7 +30,7 @@ increment extends applicability to the fuller command-triggered
 filesystem/network combination). Construct it with `commandsafety.New`,
 register it with a consuming rig via `rig.WithPermissionClassifiers`
 (`github.com/looprig/harness/pkg/rig`) — see
-[`github.com/looprig/coderig`'s `internal/app/permission_review.go`](https://github.com/looprig/coderig/blob/main/internal/app/permission_review.go)
+[`github.com/looprig/carbon`'s `internal/app/permission_review.go`](https://github.com/looprig/carbon/blob/main/internal/app/permission_review.go)
 for a complete, real composition. `pkg/catalog` is an optional convenience
 catalog over the classifiers this module defines; it never performs implicit
 global registration.
@@ -101,7 +101,7 @@ axis from Harness's own consumer-owned `gate.PermissionReviewPolicy`
 (`rig.WithPermissionReviewPolicy`): this module's policy governs what a
 single classifier internally reconciles its own output to; Harness's policy
 governs whether a validated assessment is allowed to become an auto-approval
-at all. CodeRig's `permissionReviewPolicyFor` is a real example of composing
+at all. Carbon's `permissionReviewPolicyFor` is a real example of composing
 a stricter Harness-side policy on top of this classifier's own default.
 
 ### Restore behavior

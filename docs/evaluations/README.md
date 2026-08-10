@@ -161,7 +161,7 @@ Harness's own responsibility rather than this classifier's:
   signal that would catch this classifier recommending the wrong side.
 - **Audit and restore** — durable event redaction, restore drift, and the
   disabled→enabled `DriftWarn` rule live entirely in Harness (`pkg/rig`,
-  `pkg/gate`, `pkg/event`) and are covered by Harness's and CodeRig's own
+  `pkg/gate`, `pkg/event`) and are covered by Harness's and Carbon's own
   test suites, not this corpus.
 - **Live model behavior** — every report from this runner today is
   synthetic (see "What the runner is" above): no real model call, no real

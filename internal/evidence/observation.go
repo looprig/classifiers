@@ -117,7 +117,7 @@ import (
 // entryKind/fileInfoFingerprintFields below do — see those for the precise
 // formulas (Go's os.FileInfo.Size()/Mode()/ModTime(), no reformatting).
 //
-// HOW TO INDEPENDENTLY RE-DERIVE THIS TOKEN (for the CodeRig-side
+// HOW TO INDEPENDENTLY RE-DERIVE THIS TOKEN (for the Carbon-side
 // gate.EvidenceObservationVerifier that rechecks it against a fresh look):
 // call filesystemObservationFingerprint with root = the verifier's own
 // canonicalized read root (gate.EvidenceContainmentPolicy's ReadRoot — or,

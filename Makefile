@@ -44,7 +44,7 @@ fmt-check:
 # never compiled into this module's own packages) — these three targets
 # mirror github.com/looprig/harness-permission-classifier's Makefile
 # exactly so `make secure` is a consistent convention across every sibling
-# module in this feature, not just Harness and CodeRig.
+# module in this feature, not just Harness and Carbon.
 lint: fmt-check vendor-check
 	go vet ./...
 	go tool staticcheck ./...
