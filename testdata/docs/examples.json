@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "repository": "classifiers",
+  "proofSources": [
+    {
+      "id": "example-classifiers-command-safety-construction-fixture",
+      "type": "executable-fixture",
+      "path": "examples/commandsafety/example_test.go",
+      "symbol": "Example_newClassifier"
+    },
+    {
+      "id": "example-classifiers-typed-construction-error-fixture",
+      "type": "executable-fixture",
+      "path": "examples/commandsafety/example_test.go",
+      "symbol": "Example_typedConstructionError"
+    },
+    {
+      "id": "example-classifiers-deterministic-evaluation-fixture",
+      "type": "executable-fixture",
+      "path": "examples/commandsafety/example_test.go",
+      "symbol": "Example_deterministicEvaluation"
+    },
+    {
+      "id": "example-classifiers-manifest-contract-test",
+      "type": "test",
+      "path": "internal/buildtest/docs_examples_test.go",
+      "symbol": "TestDocsExamplesArtifacts"
+    }
+  ],
+  "examples": [
+    {
+      "id": "example-classifiers-command-safety-construction-example",
+      "ecosystem": "go",
+      "owner": "classifiers",
+      "sourcePath": "examples/commandsafety/example_test.go",
+      "availability": "source-workspace",
+      "versions": {
+        "github.com/looprig/classifiers": "source-workspace"
+      },
+      "offlineCommand": "GOWORK=off GOCACHE=/tmp/looprig-classifiers-docs-gocache go test ./examples/...",
+      "assertion": "Go example output proves construction of a blocking command-safety classifier, typed command applicability, and the evidence requirement allowlist a Harness rig must configure.",
+      "workflowPath": ".github/workflows/docs-examples.yml",
+      "jobId": "docs-examples",
+      "cleanup": "No cleanup required; construction uses an offline inference stub and does not invoke evidence tools.",
+      "liveGate": null,
+      "proofIds": [
+        "example-classifiers-command-safety-construction-fixture",
+        "example-classifiers-manifest-contract-test"
+      ]
+    },
+    {
+      "id": "example-classifiers-typed-construction-error-example",
+      "ecosystem": "go",
+      "owner": "classifiers",
+      "sourcePath": "examples/commandsafety/example_test.go",
+      "availability": "source-workspace",
+      "versions": {
+        "github.com/looprig/classifiers": "source-workspace"
+      },
+      "offlineCommand": "GOWORK=off GOCACHE=/tmp/looprig-classifiers-docs-gocache go test ./examples/...",
+      "assertion": "Go example output proves New rejects a model missing required structured-output and tool capabilities with a typed ConstructionError identifying the failing field.",
+      "workflowPath": ".github/workflows/docs-examples.yml",
+      "jobId": "docs-examples",
+      "cleanup": "No cleanup required; validation is a deterministic in-memory construction check.",
+      "liveGate": null,
+      "proofIds": [
+        "example-classifiers-typed-construction-error-fixture",
+        "example-classifiers-manifest-contract-test"
+      ]
+    },
+    {
+      "id": "example-classifiers-deterministic-evaluation-example",
+      "ecosystem": "go",
+      "owner": "classifiers",
+      "sourcePath": "examples/commandsafety/example_test.go",
+      "availability": "source-workspace",
+      "versions": {
+        "github.com/looprig/classifiers": "source-workspace"
+      },
+      "offlineCommand": "GOWORK=off GOCACHE=/tmp/looprig-classifiers-docs-gocache go test ./examples/...",
+      "assertion": "Go example output proves synthetic evaluation uses the real validation and gate pipeline, and that classifier output is evidence only: an unsafe allow is tightened to human review and cannot expand gate authority.",
+      "workflowPath": ".github/workflows/docs-examples.yml",
+      "jobId": "docs-examples",
+      "cleanup": "No cleanup required; the responder is deterministic, performs no network calls, and mutates no external state.",
+      "liveGate": null,
+      "proofIds": [
+        "example-classifiers-deterministic-evaluation-fixture",
+        "example-classifiers-manifest-contract-test"
+      ]
+    }
+  ]
+}

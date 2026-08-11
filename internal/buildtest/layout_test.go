@@ -100,9 +100,11 @@ func TestModulePathIsExact(t *testing.T) {
 
 // goFileTopLevelDirs walks the module tree (excluding VCS metadata, vendor,
 // and nested worktrees) and returns the sorted, de-duplicated set of
-// top-level directory names that directly or transitively contain a .go
-// file. Root-level .go files are excluded here; TestNoRootLevelGoFiles
-// covers that case on its own.
+// top-level directory names that directly or transitively contain a
+// production .go file. Runnable documentation examples are test files, so
+// they remain outside the module's production package boundary. Root-level
+// .go files are excluded here; TestNoRootLevelGoFiles covers that case on its
+// own.
 func goFileTopLevelDirs(t *testing.T, root string) []string {
 	t.Helper()
 
@@ -125,7 +127,7 @@ func goFileTopLevelDirs(t *testing.T, root string) []string {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(rel, ".go") || len(parts) == 1 {
+		if !strings.HasSuffix(rel, ".go") || strings.HasSuffix(rel, "_test.go") || len(parts) == 1 {
 			return nil
 		}
 		found[parts[0]] = true
@@ -145,8 +147,9 @@ func goFileTopLevelDirs(t *testing.T, root string) []string {
 
 // TestGoSourceLivesOnlyUnderPkgOrInternal covers both "public packages only
 // under pkg" and "implementation packages under internal": the module's
-// only permitted Go source locations are pkg/ (public construction API) and
-// internal/ (everything else).
+// only permitted production Go source locations are pkg/ (public construction
+// API) and internal/ (everything else). Test-only documentation examples do
+// not become importable module packages and are excluded by the walker.
 func TestGoSourceLivesOnlyUnderPkgOrInternal(t *testing.T) {
 	root := repoRoot(t)
 	for _, dir := range goFileTopLevelDirs(t, root) {
