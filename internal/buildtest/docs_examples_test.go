@@ -9,6 +9,7 @@ import (
 )
 
 const docsExamplesCommand = "GOWORK=off GOCACHE=/tmp/looprig-classifiers-docs-gocache go test ./examples/..."
+const makeTestRaceCommand = "test:\n\tgo test -race ./..."
 
 type docsExamplesManifest struct {
 	SchemaVersion int    `json:"schemaVersion"`
@@ -133,10 +134,17 @@ func TestDocsExamplesArtifacts(t *testing.T) {
 		"docs-examples:",
 		"run: " + docsExamplesCommand,
 		"run: GOWORK=off GOCACHE=/tmp/looprig-classifiers-docs-gocache make test vendor-check",
-		"run: GOWORK=off GOCACHE=/tmp/looprig-classifiers-docs-gocache go test -race ./...",
 	} {
 		if !strings.Contains(workflow, required) {
 			t.Errorf("workflow does not contain %q", required)
 		}
+	}
+
+	makefileData, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	if !strings.Contains(string(makefileData), makeTestRaceCommand) {
+		t.Errorf("Makefile test target does not contain %q", makeTestRaceCommand)
 	}
 }
