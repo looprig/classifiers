@@ -84,13 +84,19 @@ previously accepted revision.
 
 ## Build, test, and secure
 
-This module **vendors** its dependency tree.
+**Dependencies are pinned, not vendored.** `go.mod` pins exact versions and
+`go.sum` verifies their content hashes, which is what makes a build
+reproducible. This module deliberately has no `vendor/`: a vendor tree is
+ignored under a `go.work` but silently satisfies a `GOWORK=off` build, so a
+stale one lets standalone verification pass against the vendored copy rather
+than the version `go.mod` actually pins — defeating the purpose of verifying
+standalone. Run `GOWORK=off go test ./...` to check this module against its
+real pinned dependencies.
 
 ```sh
 make fmt         # gofmt the whole module in place
 make fmt-check   # fail if any tracked Go file is not gofmt-clean
 make test        # go test -race ./...            (always -race)
-make vendor      # refresh vendor/, scrub local-replace VCS metadata, verify clean
 make release-check RELEASE_MODFILE=go.release.mod  # guard + build against a tagged release modfile
 ```
 

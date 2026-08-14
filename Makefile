@@ -1,41 +1,37 @@
-.PHONY: test fmt fmt-check lint vuln secure vendor vendor-scrub vendor-check release-check
+.PHONY: test fmt fmt-check lint vuln secure release-check
 
 GO ?= go
 
-# Module's own package dirs, excluding vendor/ and any nested .worktrees/
-# modules (go list ./... stops at nested module boundaries and skips vendor).
-GO_DIRS = $(shell go list -f '{{.Dir}}' ./...)
+# Module's own package dirs (go list ./... stops at nested module boundaries).
+# GO_DIRS scopes gosec, which takes package dirs. Never hand GO_DIRS to gofmt:
+# gofmt recurses into directory operands, and for a module with a root package
+# GO_DIRS contains the module root, so gofmt would walk the entire tree —
+# including the nested .worktrees/ checkouts, which are separate modules. Use
+# GO_FILES for gofmt: it expands to each package dir's own .go files (including
+# platform-specific ones go list omits for the host) without descending.
+GO_DIRS := $(shell go list -f '{{.Dir}}' ./...)
+GO_FILES := $(foreach dir,$(GO_DIRS),$(wildcard $(dir)/*.go))
 
-# Build from the vendored dependency tree: offline, reproducible, and
-# auditable (every dependency's source lives in vendor/ and shows up in
-# review diffs). Go auto-selects -mod=vendor when vendor/ is present; export
-# it explicitly so a stray global GOFLAGS (e.g. -mod=mod) can't silently
-# switch the build off the vendored tree. Do NOT use -mod=readonly here — it
-# ignores vendor/ entirely.
-export GOFLAGS := -mod=vendor
-
-VENDOR_DIR ?= vendor
-
-# Sibling modules this module locally replaces during development (see
-# go.mod's replace block), matching the pattern in
-# github.com/looprig/harness-permission-classifier's Makefile.
-LOCAL_REPLACE_VENDOR_DIRS := \
-	$(VENDOR_DIR)/github.com/looprig/core \
-	$(VENDOR_DIR)/github.com/looprig/harness \
-	$(VENDOR_DIR)/github.com/looprig/inference
+# This module does not vendor. go.mod pins exact versions and go.sum verifies
+# their content hashes, which is what makes a build reproducible; a vendor tree
+# adds only offline builds and source-level dependency diffs. It also actively
+# misleads: a stale vendor/ is ignored under a go.work but silently satisfies a
+# GOWORK=off build, so standalone verification tests the vendored copy rather
+# than the version go.mod actually pins — which is precisely what standalone
+# verification exists to check.
 
 RELEASE_MODFILE ?= go.release.mod
 
 test:
 	go test -race ./...
 
-# Format the whole module in place.
+# Format this module's own Go files in place.
 fmt:
-	gofmt -w $(GO_DIRS)
+	gofmt -w $(GO_FILES)
 
 # Fail (non-zero exit) if any tracked Go file is not gofmt-clean.
 fmt-check:
-	@unformatted=$$(gofmt -l $(GO_DIRS)); \
+	@unformatted=$$(gofmt -l $(GO_FILES)); \
 	if [ -n "$$unformatted" ]; then \
 		echo "gofmt needed (run 'make fmt'):"; echo "$$unformatted"; exit 1; \
 	fi
@@ -45,14 +41,13 @@ fmt-check:
 # mirror github.com/looprig/harness-permission-classifier's Makefile
 # exactly so `make secure` is a consistent convention across every sibling
 # module in this feature, not just Harness and Carbon.
-lint: fmt-check vendor-check
+lint: fmt-check
 	go vet ./...
 	go tool staticcheck ./...
 	# gosec is NOT module-aware: its ./... is a filesystem walk that would
 	# descend into sibling checkouts alongside this module rather than
 	# stopping at module boundaries the way go vet and staticcheck do. Scope
-	# it to THIS module's package dirs via GO_DIRS (the same go-list idiom
-	# fmt/fmt-check use).
+	# it to THIS module's package dirs via GO_DIRS.
 	go tool gosec $(GO_DIRS)
 
 vuln:
@@ -60,26 +55,6 @@ vuln:
 	go tool govulncheck ./...
 
 secure: lint vuln
-
-# Refresh the auditable dependency tree, then remove only VCS metadata
-# donated by any declared local replace targets. A final whole-tree check
-# catches metadata from any other source instead of broadening the scrub
-# silently.
-vendor:
-	go mod vendor
-	$(MAKE) vendor-scrub
-	$(MAKE) vendor-check
-
-vendor-scrub:
-	@if [ -n "$(LOCAL_REPLACE_VENDOR_DIRS)" ]; then \
-		rm -rf $(addsuffix /.git,$(LOCAL_REPLACE_VENDOR_DIRS)); \
-	fi
-
-vendor-check:
-	@metadata=$$(find "$(VENDOR_DIR)" -name .git -print 2>/dev/null); \
-	if [ -n "$$metadata" ]; then \
-		echo "forbidden VCS metadata in $(VENDOR_DIR):"; echo "$$metadata"; exit 1; \
-	fi
 
 # Fail-closed guard for building a tagged release: refuse to proceed unless
 # a prepared release modfile exists and contains no local filesystem

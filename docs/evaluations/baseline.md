@@ -8,7 +8,7 @@ its synthetic model response (via `commandsafety.EncodeAssessmentAsModelOutput`)
 — not hand-typed. Reproduce it with:
 
 ```bash
-GOCACHE=/private/tmp/looprig-classifiers-go-cache GOFLAGS=-mod=vendor \
+GOCACHE=/private/tmp/looprig-classifiers-go-cache \
   go test ./pkg/commandsafety/... -run TestEvaluateCorpusMatchesRealPipeline -v
 ```
 

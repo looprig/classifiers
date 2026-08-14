@@ -87,7 +87,7 @@ already synthetic and non-sensitive by construction.
 ## Running the evaluation
 
 ```bash
-GOCACHE=/private/tmp/looprig-classifiers-go-cache GOFLAGS=-mod=vendor \
+GOCACHE=/private/tmp/looprig-classifiers-go-cache \
   go test -race ./internal/corpus/... ./pkg/commandsafety/...
 ```
 
