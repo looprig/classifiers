@@ -133,7 +133,7 @@ func TestDocsExamplesArtifacts(t *testing.T) {
 	for _, required := range []string{
 		"docs-examples:",
 		"run: " + docsExamplesCommand,
-		"run: GOWORK=off GOCACHE=/tmp/looprig-classifiers-docs-gocache make test vendor-check",
+		"run: GOWORK=off GOCACHE=/tmp/looprig-classifiers-docs-gocache make test",
 	} {
 		if !strings.Contains(workflow, required) {
 			t.Errorf("workflow does not contain %q", required)
