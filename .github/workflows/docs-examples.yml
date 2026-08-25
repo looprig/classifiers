@@ -21,4 +21,4 @@ jobs:
       - name: Run deterministic offline examples
         run: GOWORK=off GOCACHE=/tmp/looprig-classifiers-docs-gocache go test ./examples/...
       - name: Run repository checks
-        run: GOWORK=off GOCACHE=/tmp/looprig-classifiers-docs-gocache make test
+        run: GOWORK=off GOCACHE=/tmp/looprig-classifiers-docs-gocache make check
