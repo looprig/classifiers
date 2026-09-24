@@ -31,9 +31,24 @@ filesystem/network combination). Construct it with `commandsafety.New`,
 register it with a consuming rig via `rig.WithPermissionClassifiers`
 (`github.com/looprig/harness/pkg/rig`) — see
 [`github.com/looprig/carbon`'s `internal/app/permission_review.go`](https://github.com/looprig/carbon/blob/main/internal/app/permission_review.go)
-for a complete, real composition. `pkg/catalog` is an optional convenience
-catalog over the classifiers this module defines; it never performs implicit
-global registration.
+for a complete, real composition. `examples/commandsafety` is a runnable,
+offline construction and evaluation example.
+
+`pkg/catalog` is reserved for an optional convenience catalog over the
+classifiers this module defines. It is currently a scaffold with **no exported
+API**, so construct classifiers directly from `pkg/commandsafety`. It will
+never perform implicit global registration.
+
+## Install
+
+```sh
+go get github.com/looprig/classifiers@latest
+```
+
+The module builds on Harness's public contracts and pins a Harness version in
+its `go.mod`. Under minimal version selection, adding it can raise your build's
+Harness version to that pin. Direct Looprig dependencies: `core`, `harness`, `inference`. It is a
+tier-4 module in the Looprig workspace, consumed by `carbon`.
 
 ### Enable/disable
 
@@ -127,22 +142,22 @@ changes.
 
 ```text
 classifiers/
-    go.mod
-    LICENSE
-    README.md
-    CONTRIBUTING.md
-    docs/
-        plans/
-        evaluations/
     pkg/
-        commandsafety/   # public construction API for gate.command-safety
-        catalog/         # optional convenience catalog, no implicit registration
+        commandsafety/   # public construction and evaluation API for gate.command-safety
+        catalog/         # reserved convenience catalog (scaffold, no exported API yet)
     internal/
         prompt/          # immutable classifier prompt
-        wire/             # strict JSON codecs for classifier input/output
+        wire/            # strict JSON codecs and schema for classifier input/output
         policy/          # deterministic risk/authorization policy
+        evidence/        # read-only filesystem and Git evidence tools
         corpus/          # versioned evaluation corpus
-        testmodel/       # fake inference client for tests
+        buildtest/       # structural invariants (layout, docs examples, release modfile)
+    examples/
+        commandsafety/   # runnable documentation example (test file)
+    docs/
+        evaluations/     # corpus format, coverage and evaluation-report shape
+    scripts/
+        check-release-modfile.sh
 ```
 
 Only `pkg/` is public API. Everything else, including prompts, codecs,
@@ -152,16 +167,19 @@ invariants (see [`CONTRIBUTING.md`](CONTRIBUTING.md)).
 
 ## Build and test
 
-**Dependencies are pinned, not vendored.** `go.mod` pins exact versions and
-`go.sum` verifies their content hashes, which is what makes a build
-reproducible. This module deliberately has no `vendor/`: a vendor tree is
-ignored under a `go.work` but silently satisfies a `GOWORK=off` build, so a
-stale one lets standalone verification pass against the vendored copy rather
-than the version `go.mod` actually pins — defeating the purpose of verifying
-standalone. Run `GOWORK=off go test ./...` to check this module against its
-real pinned dependencies.
+The Go baseline is 1.26.8. Dependencies are pinned in `go.mod`/`go.sum`, not
+vendored. Verify the module standalone against its real pinned dependencies:
 
 ```sh
-make test               # go test -race ./...
-GOWORK=off go test ./... # verify against the pinned dependency versions
+GOWORK=off go test ./...
+make check           # gofmt check, vet, staticcheck, gosec, govulncheck, race tests, build
+make release-check   # needs a prepared go.release.mod: rejects local replaces, then tests with it
 ```
+
+Other targets: `fmt`, `fmt-check`, `vet`, `test`, `lint`, `vuln`, `secure`,
+`check-staticcheck`, `check-gosec`, `check-vuln`, `build`. The lint and
+security tools are pinned by `tool` directives in `go.mod`.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
