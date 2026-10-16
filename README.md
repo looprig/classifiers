@@ -167,7 +167,7 @@ invariants (see [`CONTRIBUTING.md`](CONTRIBUTING.md)).
 
 ## Build and test
 
-The Go baseline is 1.26.8. Dependencies are pinned in `go.mod`/`go.sum`, not
+The Go baseline is 1.26.9. Dependencies are pinned in `go.mod`/`go.sum`, not
 vendored. Verify the module standalone against its real pinned dependencies:
 
 ```sh
